@@ -1,0 +1,5 @@
+pywin32
+# cnocr
+cnocr[ort-gpu]
+scikit-image
+opencv-python

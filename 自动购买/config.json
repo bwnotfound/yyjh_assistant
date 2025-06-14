@@ -1,0 +1,324 @@
+[
+    {
+        "name": "洛阳",
+        "actions": [
+            [
+                {
+                    "name": "杂货铺",
+                    "path": [[10,18],[14,22],[17,21]],
+                    "mode": "buy",
+                    "buy": [[4,1],[5,1],[6,1]]
+                }
+            ],
+            [
+                {
+                    "name": "小摊",
+                    "path": [[17,21],[18,28],[22,33],[24,29]],
+                    "mode": "buy",
+                    "buy": [[1,5],[2,5],[3,5],[4,5],[5,3],[6,3],[7,3],[8,3]]
+                }
+            ]
+        ],
+        "next_map_action": {
+            "next_name": "嵩山",
+            "next_icon_pos": [940,414],
+            "next_btn_pos": [698,664]
+        }
+    },
+    {
+        "name": "嵩山",
+        "actions": [
+            [
+                {
+                    "name": "佛香库房",
+                    "path": [[19,32],[10,32],[10,15],[13,14]],
+                    "mode": "buy",
+                    "buy": [[1,1]]
+                }
+            ]
+        ],
+        "map_size": [21,37],
+        "next_map_action": {
+            "next_name": "幽州",
+            "next_icon_pos": [1258,363],
+            "next_btn_pos": [1007,615]
+        }
+    },
+    {
+        "name": "幽州",
+        "actions": [
+            [
+                {
+                    "name": "杂货铺",
+                    "path": [[11,22],[16,21]],
+                    "mode": "buy",
+                    "buy": [[4,1],[7,2]]
+                },
+                {
+                    "name": "药铺",
+                    "path": [[16,21],[16,28]],
+                    "mode": "buy",
+                    "buy": [[5,2]]
+                }
+            ]
+        ],
+        "next_map_action": {
+            "next_name": "姑苏",
+            "next_icon_pos": [1173,846],
+            "next_btn_pos": [926,974]
+        }
+    },
+    {
+        "name": "姑苏",
+        "actions": [
+            [
+                {
+                    "name": "河虾",
+                    "path": [[17,11],[16,17],[7,17]],
+                    "mode": "custom",
+                    "actions": [
+                        {
+                            "mode": "button",
+                            "pos": "table_1",
+                            "skip": 1
+                        },
+                        {
+                            "mode": "button",
+                            "pos": "chat_2",
+                            "delay": 3.5
+                        }
+                    ]
+                }
+            ]
+        ],
+        "next_map_action": {
+            "next_name": "杭州",
+            "next_icon_pos": [1122,638],
+            "next_btn_pos": [876,932]
+        }
+    },
+    {
+        "name": "杭州",
+        "actions": [
+            [
+                {
+                    "name": "河虾",
+                    "path": [[31,13],[32,6],[31,3]],
+                    "mode": "custom",
+                    "actions": [
+                        {
+                            "mode": "button",
+                            "pos": "table_1",
+                            "skip": 1
+                        },
+                        {
+                            "mode": "button",
+                            "pos": "chat_2",
+                            "delay": 3.5
+                        }
+                    ]
+                },
+                {
+                    "name": "赏荷",
+                    "path": [[31,3],[32,10],[32,15],[25,15],[25,25],[15,25],[10,22],[10,18]],
+                    "mode": "custom",
+                    "actions": [
+                        {
+                            "mode": "button",
+                            "pos": "table_2",
+                            "skip": 1
+                        },
+                        {
+                            "mode": "button",
+                            "pos": "chat_1",
+                            "skip": 2
+                        }
+                    ]
+                }
+            ]
+        ],
+        "next_map_action": {
+            "next_name": "龙泉镇",
+            "next_icon_pos": [981,705],
+            "next_btn_pos": [742,958]
+        }
+    },
+    {
+        "name": "龙泉镇",
+        "actions": [
+            [
+                {
+                    "name": "河虾",
+                    "path": [[12,7],[12,12]],
+                    "mode": "custom",
+                    "actions": [
+                        {
+                            "mode": "button",
+                            "pos": "table_1",
+                            "skip": 1
+                        },
+                        {
+                            "mode": "button",
+                            "pos": "chat_2",
+                            "delay": 3.5
+                        }
+                    ]
+                },
+                {
+                    "name": "牛",
+                    "path": [[12,12],[11,19]],
+                    "mode": "custom",
+                    "actions": [
+                        {
+                            "mode": "button",
+                            "pos": "table_2",
+                            "skip": 1
+                        },
+                        {
+                            "mode": "button",
+                            "pos": "chat_1",
+                            "skip": 1,
+                            "delay": 3.5
+                        }
+                    ]
+                }
+            ]
+        ],
+        "next_map_action": {
+            "next_name": "双王镇",
+            "next_icon_pos": [743,654],
+            "next_btn_pos": [500,897]
+        }
+    },
+    {
+        "name": "双王镇",
+        "actions": [
+            [
+                {
+                    "name": "牛",
+                    "path": [[11,23],[16,27],[22,27]],
+                    "mode": "custom",
+                    "actions": [
+                        {
+                            "mode": "button",
+                            "pos": "table_2",
+                            "skip": 1
+                        },
+                        {
+                            "mode": "button",
+                            "pos": "chat_1",
+                            "skip": 1,
+                            "delay": 3.5
+                        }
+                    ]
+                }
+            ]
+        ],
+        "next_map_action": {
+            "next_name": "南阳渡",
+            "next_icon_pos": [968,553],
+            "next_btn_pos": [724,801]
+        }
+    },
+    {
+        "name": "南阳渡",
+        "actions": [
+            [
+                {
+                    "name": "杂货铺",
+                    "path": [[28,17],[24,20]],
+                    "mode": "buy",
+                    "buy": [[3,1],[6,1],[7,2],[8,1]]
+                },
+                {
+                    "name": "药铺",
+                    "path": [[24,20],[25,23]],
+                    "mode": "buy",
+                    "buy": [[3,5]]
+                },
+                {
+                    "name": "木人",
+                    "path": [[25,23],[22,21],[19,19]],
+                    "mode": "custom",
+                    "actions": [
+                        {
+                            "mode": "button",
+                            "pos": "table_2",
+                            "skip": 1
+                        },
+                        {
+                            "mode": "button",
+                            "pos": "chat_1",
+                            "delay": 3.5
+                        }
+                    ]
+                }
+            ]
+        ],
+        "next_map_action": {
+            "next_name": "太乙山",
+            "next_icon_pos": [805,448],
+            "next_btn_pos": [556,736]
+        }
+    },
+    {
+        "name": "太乙山",
+        "actions": [
+            [
+                {
+                    "name": "佛香库房",
+                    "path": [[13,34],[17,30],[15,24],[15,18],[20,15]],
+                    "mode": "buy",
+                    "buy": [[1,1]]
+                }
+            ]
+        ],
+        "next_map_action": {
+            "next_name": "凤鸣集",
+            "next_icon_pos": [910,689],
+            "next_btn_pos": [663,919]
+        }
+    },
+    {
+        "name": "太乙山",
+        "actions": [
+            [
+                {
+                    "name": "木人",
+                    "path": [[9,22],[15,21]],
+                    "mode": "custom",
+                    "actions": [
+                        {
+                            "mode": "button",
+                            "pos": "table_2",
+                            "skip": 1
+                        },
+                        {
+                            "mode": "button",
+                            "pos": "chat_1",
+                            "delay": 3.5
+                        }
+                    ]
+                }
+            ]
+        ],
+        "next_map_action": {
+            "next_name": "成都",
+            "next_icon_pos": [777,717],
+            "next_btn_pos": [540,964]
+        }
+    },
+    {
+        "name": "成都",
+        "actions": [
+            [
+                {
+                    "name": "杂货铺",
+                    "path": [[15,11],[17,14]],
+                    "mode": "buy",
+                    "buy": [[4,1],[6,1]]
+                }
+            ]
+        ]
+    }
+]
