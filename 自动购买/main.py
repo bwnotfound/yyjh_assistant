@@ -3,30 +3,63 @@ import sys, os
 import json
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/..")
-from utils import Mumu, wait_screen_change, Executor, OCR, wait_pos_change
+from utils import Mumu, wait_screen_change, wait_pos_change, get_next_btn_pos
 
-start_index = 0
+start_map_index = 0
 start_action_index = 0
+config_name = "config.json"
+# config_name = "杀牛.json"
 
 character_pos = (848, 534)
 block_width, block_height = 160, 80
-move_max_num = 8
+vision_size = "小"
+assert vision_size == "小", "目前只支持小视野"
+if vision_size == "小":
+    move_max_num = 8
+    vision_max_delta_limit = 10
+    vision_min_delta_limit = 8
 
-chat_btn_pos = (1737, 594)
-collect_btn_pos = (1151, 508)
+table_height_space = 70
+chat_height_space = 100
+table_first_btn_pos = (1715, 509)
+chat_first_btn_pos = (1140, 472)
+
+table_btn_click_time_delay = 0.4
+chat_btn_click_time_delay = 0.4
+normal_btn_click_time_delay = 0.25
+screen_change_time_delay = 1
+
+table_btn_pos_list = [
+    (table_first_btn_pos[0], table_first_btn_pos[1] + i * table_height_space)
+    for i in range(5)
+]
+chat_btn_pos_list = [
+    (chat_first_btn_pos[0], chat_first_btn_pos[1] + i * chat_height_space)
+    for i in range(5)
+]
+buy_item_start_pos = (606, 338)
+buy_space = (443, 147)
+buy_item_pos_list = [
+    (buy_item_start_pos[0] + j * buy_space[0], buy_item_start_pos[1] + i * buy_space[1])
+    for i in range(5)
+    for j in range(2)
+]
+buy_increase_btn_pos = (1600, 618)
+buy_btn_pos = (1454, 868)
+buy_exit_btn_pos = (1757, 919)
+
 blank_btn_pos = (1717, 762)
 package_pos = (451, 998)
 ticket_btn_pos = (602, 856)
+
 symbol_pos = (832, 374)
 symbol_color = (251, 245, 234)
 symbol_color_diff_threshold = 50
-window_origin_size = (1775, 985)
-
-img_time_delay = 0.3
-img_diff_threshold = 0.06
 
 
-def action_parse(action_list, start_pos):
+def move_seq_parse(action_list):
+    start_pos = action_list[0]
+    action_list = action_list[1:]
     result = [start_pos]
     last_x, last_y = start_pos
     last_tgt_x, last_tgt_y = None, None
@@ -76,9 +109,6 @@ def action_parse(action_list, start_pos):
                 else:
                     last_tgt_x, last_tgt_y = tgt_x, tgt_y
             else:
-                # result.append((tgt_x, tgt_y))
-                # last_x, last_y = tgt_x, tgt_y
-                # last_tgt_x, last_tgt_y = None, None
                 last_tgt_x, last_tgt_y = tgt_x, tgt_y
         else:
             last_tgt_x, last_tgt_y = tgt_x, tgt_y
@@ -87,19 +117,43 @@ def action_parse(action_list, start_pos):
     return result
 
 
-def action_exec(action_list, mumu: Mumu, ocr: OCR, executor: Executor, map_limit=999):
+def move_seq_exec(action_list, mumu: Mumu, map_size=None):
+    if map_size is None:
+        map_size = (999, 999)
     is_fly = False
     for i in range(1, len(action_list)):
         tgt_x, tgt_y = action_list[i]
         pre_pos = (
             action_list[i - 1] if action_list[i - 1][0] != -1 else action_list[i - 2]
         )
-        new_character_pos = (
-            character_pos[0],
-            character_pos[1]
-            + max(0, sum(pre_pos) - map_limit) * block_height // 2
-            + min(0, sum(pre_pos) - 8) * block_height // 2,
-        )
+        if (
+            sum(pre_pos) < vision_min_delta_limit
+            or sum(map_size) - sum(pre_pos) < vision_max_delta_limit
+        ):
+            new_character_pos = (
+                character_pos[0],
+                character_pos[1]
+                + max(0, sum(pre_pos) - (sum(map_size) - vision_max_delta_limit))
+                * block_height
+                // 2
+                + min(0, sum(pre_pos) - vision_min_delta_limit) * block_height // 2,
+            )
+        elif (abs(pre_pos[0] - map_size[0]) + pre_pos[1]) < vision_min_delta_limit:
+            new_character_pos = (
+                character_pos[0]
+                - min(
+                    0,
+                    (abs(pre_pos[0] - map_size[0]) + pre_pos[1])
+                    - vision_min_delta_limit,
+                )
+                * block_width
+                // 2,
+                character_pos[1],
+            )
+        elif (pre_pos[0] + abs(pre_pos[1] - map_size[1])) < vision_max_delta_limit:
+            assert False, "西南方向的地图极点暂不支持"
+        else:
+            new_character_pos = character_pos
         if tgt_x == -1 and tgt_y == -1:
             mumu.click(new_character_pos, 0.35)
             is_fly = True
@@ -117,112 +171,145 @@ def action_exec(action_list, mumu: Mumu, ocr: OCR, executor: Executor, map_limit
             + x_block_cnt * block_height // 2
             + y_block_cnt * block_height // 2,
         )
-        # (949, 688)
+        img = mumu.capture_window()
         mumu.click((x, y), 0.2)
-        wait_pos_change(mumu, threshold=img_diff_threshold, fps=1 / img_time_delay)
-        # wait_pos_change(executor, ocr, fps=1 / img_time_delay)
+        wait_pos_change(mumu, threshold=0.01, fps=10, img=img, max_wait_time=3)
         if is_fly:
             is_fly = False
             time.sleep(0.8)
-        # wait_pos_change(executor, ocr, reverse=True, fps=1 / img_time_delay)
-        wait_pos_change(
-            mumu, reverse=True, threshold=img_diff_threshold, fps=1 / img_time_delay
-        )
+        wait_screen_change(mumu, reverse=True, threshold=0.1, fps=10, raw_diff=True)
 
 
 def teleport(config, mumu: Mumu):
-    mumu.click(package_pos, 1)
-    mumu.click(ticket_btn_pos, 1)
-    mumu.click(config["next_icon_pos"], 0.7)
-    mumu.click(config["next_btn_pos"], 0.7)
+    mumu.click(package_pos, screen_change_time_delay)
+    mumu.click(ticket_btn_pos, screen_change_time_delay)
+    mumu.click(config["next_icon_pos"], screen_change_time_delay)
+    mumu.click(
+        (
+            config["next_btn_pos"]
+            if "next_btn_pos" in config
+            else get_next_btn_pos(config["next_icon_pos"])
+        ),
+        screen_change_time_delay,
+    )
+    time.sleep(3)
 
 
-def collect(mumu: Mumu):
-    mumu.click(chat_btn_pos, 0.4)
-    mumu.click(collect_btn_pos, 0.25)
-    while True:
-        now = time.perf_counter()
-        mumu.click(blank_btn_pos)
-        img = mumu.capture_window()
-        if not mumu.is_color_similar(
-            img, symbol_pos, symbol_color, symbol_color_diff_threshold
-        ):
-            break
-        if time.perf_counter() - now < 0.1:
-            time.sleep(0.1)
-    time.sleep(0.4)
+def buy_exec(buy_action_list, mumu: Mumu, auto_enter=True):
+    if auto_enter:
+        mumu.click(table_btn_pos_list[1], delay=table_btn_click_time_delay)
+        mumu.click(chat_btn_pos_list[0], delay=screen_change_time_delay)
+    for index, num in buy_action_list:
+        index -= 1
+        mumu.click(buy_item_pos_list[index], delay=normal_btn_click_time_delay)
+        while num > 1:
+            mumu.click(buy_increase_btn_pos, delay=normal_btn_click_time_delay)
+            num -= 1
+        mumu.click(buy_btn_pos)
+        time.sleep(0.8)
+    mumu.click(buy_exit_btn_pos, delay=screen_change_time_delay)
+
+
+def kill_exec(mumu: Mumu):
+    mumu.click(table_btn_pos_list[1], delay=table_btn_click_time_delay)
+    mumu.click(blank_btn_pos, delay=screen_change_time_delay)
+    start = time.perf_counter()
+    mumu.click(chat_btn_pos_list[0], delay=screen_change_time_delay)
+    mumu.click(blank_btn_pos, delay=screen_change_time_delay)
+    while time.perf_counter() - start < 4.5:
+        time.sleep(4.5 - (time.perf_counter() - start))
+
+
+def custom_action_exec(custom_action_list, mumu: Mumu):
+    for action in custom_action_list:
+        if action["mode"] == "button":
+            if action["pos"].startswith("table"):
+                tgt_list = table_btn_pos_list
+            else:
+                assert action["pos"].startswith(
+                    "chat"
+                ), "自定义动作位置必须以table或chat开头"
+                tgt_list = chat_btn_pos_list
+            index = int(action["pos"].split("_")[1])
+            index -= 1  # 转换为0基索引
+            if index < 0 or index >= len(tgt_list):
+                raise ValueError(f"自定义动作位置索引超出范围: {index}")
+            start = time.perf_counter()
+            mumu.click(tgt_list[index])
+            skip = action.get("skip", 0)
+            while skip > 0:
+                mumu.click(blank_btn_pos, delay=screen_change_time_delay)
+                skip -= 1
+            delay = action.get("delay", normal_btn_click_time_delay)
+            while time.perf_counter() - start < delay:
+                time.sleep(delay - (time.perf_counter() - start))
+        elif action["mode"] == "buy":
+            buy_exec(action["actions"], mumu, auto_enter=False)
+        else:
+            raise ValueError(f"未知的自定义动作模式: {action['mode']}")
 
 
 if __name__ == "__main__":
-    mumu = Mumu("D:/MuMu Player 12/shell/MuMuManager.exe")
-    # ocr = OCR(mumu)
-    # executor = Executor(mumu)
-    ocr = None
-    executor = None
+    mumu = Mumu("D:/MuMu Player 12")
     with open(
-        os.path.join(os.path.dirname(__file__), "config.json"), "r", encoding="utf-8"
+        os.path.join(os.path.dirname(__file__), config_name), "r", encoding="utf-8"
     ) as f:
         config = json.load(f)
 
     for map_config in config:
         for i, action in enumerate(map_config["actions"]):
-            parsed_action = action_parse(action[1:], action[0])
+            parsed_action = move_seq_parse(action["path"])
             if isinstance(parsed_action, str):
-                print(parsed_action)
+                print(f"### {map_config['name']}:" + parsed_action)
                 exit()
-        if "next_map_action" not in map_config:
-            pass
-        elif isinstance(map_config["next_map_action"], dict):
-            pass
-        else:
-            parsed_action = action_parse(
-                map_config["next_map_action"][1:],
-                map_config["next_map_action"][0],
-            )
+        if not (
+            "next_map_action" not in map_config
+            or isinstance(map_config["next_map_action"], dict)
+        ):
+            parsed_action = move_seq_parse(map_config["next_map_action"])
             if isinstance(parsed_action, str):
-                print(parsed_action)
+                print(f"### {map_config['name']}:" + parsed_action)
                 exit()
 
     for i, map_config in enumerate(config):
-        if start_index is not None and i < start_index:
+        if start_map_index is not None and i < start_map_index:
             continue
-        print(f"开始处理第{i+1}张地图: {map_config['name']}")
+        print(f"---开始处理第{i+1}张地图: {map_config['name']}---")
         for j, action in enumerate(map_config["actions"]):
             if (
                 start_action_index is not None
-                and i == start_index
+                and i == start_map_index
                 and j < start_action_index
             ):
                 continue
-            parsed_action = action_parse(action[1:], action[0])
-            action_exec(
+            parsed_action = move_seq_parse(action["path"])
+            move_seq_exec(
                 parsed_action,
                 mumu,
-                ocr,
-                executor,
-                map_limit=map_config.get("map_limit", 999),
+                map_size=map_config.get("map_size", None),
             )
-            print(f"第{j+1}次行走完成")
-            collect(
-                mumu,
-            )
-            print(f"第{j+1}次收集完成")
+            print(f"    第{j+1}次行走完成")
+            if action["mode"] == "buy":
+                buy_exec(action["buy"], mumu)
+                print(f"    第{j+1}次购买完成")
+            elif action["mode"] == "kill":
+                kill_exec(mumu)
+                print(f"    第{j+1}次杀动物完成")
+            elif action["mode"] == "custom":
+                custom_action_exec(action["actions"], mumu)
+                print(f"    第{j+1}次自定义动作完成")
+            else:
+                raise ValueError(f"未知的动作模式: {action['mode']}")
         if "next_map_action" not in map_config:
             break
         if isinstance(map_config["next_map_action"], dict):
             teleport(map_config["next_map_action"], mumu)
-            time.sleep(4.5)
         else:
-            parsed_action = action_parse(
-                map_config["next_map_action"][1:],
-                map_config["next_map_action"][0],
-            )
-            action_exec(
+            parsed_action = move_seq_parse(map_config["next_map_action"])
+            move_seq_exec(
                 parsed_action,
                 mumu,
-                ocr,
-                executor,
-                map_limit=map_config.get("map_limit", 999),
+                map_size=map_config.get("map_size", None),
             )
-            time.sleep(4)
-    print("所有地图处理完成")
+            time.sleep(3.5)
+    print("### 所有地图处理完成 ###")

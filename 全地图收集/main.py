@@ -127,7 +127,7 @@ def action_exec(action_list, mumu: Mumu, ocr: OCR, executor: Executor, map_limit
             is_fly = False
             # move_cnt = 0
             time.sleep(0.8)
-        wait_screen_change(mumu, reverse=True, threshold=0.1, fps=3, raw_diff=True)
+        wait_screen_change(mumu, reverse=True, threshold=0.09, fps=10, raw_diff=True)
         # wait_pos_change(mumu, threshold=img_diff_threshold, reverse=True, fps=1.5)
 
 
@@ -141,16 +141,19 @@ def teleport(config, mumu: Mumu):
 def collect(mumu: Mumu):
     mumu.click(chat_btn_pos, 0.4)
     mumu.click(collect_btn_pos, 0.25)
-    while True:
+    cnt = 0
+    while cnt < 5:
         now = time.perf_counter()
         mumu.click(blank_btn_pos)
         img = mumu.capture_window()
         if not mumu.is_color_similar(
             img, symbol_pos, symbol_color, symbol_color_diff_threshold
         ):
-            break
+            cnt += 1
+            continue
+        cnt = 0
         if time.perf_counter() - now < 0.1:
-            time.sleep(0.1)
+            time.sleep(0.2)
     time.sleep(0.4)
 
 
@@ -225,5 +228,8 @@ if __name__ == "__main__":
                 executor,
                 map_limit=map_config.get("map_limit", 999),
             )
-            time.sleep(4)
+            time.sleep(3.5)
     print("所有地图处理完成")
+    mumu.click((1776,994))
+    print("保存完成")
+    
