@@ -39,15 +39,7 @@ if __name__ == "__main__":
         # exit()
         while True:
             img = mumu.capture_window()
-            if not mumu.is_color_similar(img, screen_pos, screen_color, threshold=15):
-                break
             if mumu.is_color_similar(img, symbol_pos, symbol_color, threshold=70):
                 break
-        time.sleep(0.5)
-        if not mumu.is_color_similar(
-            mumu.capture_window(), screen_pos, screen_color, threshold=15
-        ):
-            time.sleep(1)
-            continue
         mumu.click(btn_pos)
-        time.sleep(1)
+        time.sleep(1.5)
