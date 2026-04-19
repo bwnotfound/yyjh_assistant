@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+import threading
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -89,10 +90,27 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, ev) -> None:
         if self._picker is not None:
-            self._picker.close()
-        if self._mumu is not None:
             try:
-                self._mumu.close()
+                self._picker.close()
             except Exception:
-                log.exception("关闭 Mumu 失败")
+                log.exception("关闭 picker 失败")
+
+        # 由于上面已经把 close 超时压到 ~0.6s,进程几乎不会被留下孤儿。
+        # Mumu 清理放到后台 daemon 线程:即使它还没做完,UI 也能立刻关掉;
+        mumu = self._mumu
+        self._mumu = None
+        if mumu is not None:
+            threading.Thread(
+                target=self._shutdown_mumu_bg,
+                args=(mumu,),
+                daemon=True,
+            ).start()
+
         super().closeEvent(ev)
+
+    @staticmethod
+    def _shutdown_mumu_bg(mumu) -> None:
+        try:
+            mumu.close()
+        except Exception:
+            log.exception("后台关闭 Mumu 失败")

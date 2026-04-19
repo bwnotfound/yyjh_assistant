@@ -165,17 +165,37 @@ class SyncInteractiveSession:
             return "\n".join(lines[1:])
         return "\n".join(lines)
 
-    def close(self):
+    def close(self, grace: float = 0.3):
+        """快速关闭：温和 exit → terminate → kill，最多阻塞约 2*grace 秒。"""
         self._stop_reader.set()
+        # 先写 exit 给 adb shell / cmd 一个优雅退出的机会
         try:
             self._proc.stdin.write("exit\nexit\n")
             self._proc.stdin.flush()
         except Exception:
             pass
+        # 关掉 stdin,让对端读到 EOF 自行退出
         try:
-            self._proc.wait(timeout=5)
+            self._proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self._proc.wait(timeout=grace)
+            return
         except subprocess.TimeoutExpired:
+            pass
+        # 升级到 terminate
+        try:
+            self._proc.terminate()
+            self._proc.wait(timeout=grace)
+            return
+        except Exception:
+            pass
+        # 兜底 kill
+        try:
             self._proc.kill()
+        except Exception:
+            pass
 
 
 # =============================================================================
