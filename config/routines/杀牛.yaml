@@ -1,0 +1,195 @@
+name: 杀牛
+description: '迁移自旧 json，途经: 洛阳 → 落霞镇 → 华山 → 南阳渡 → 姑苏 → 杭州 → 泉州 → 龙泉镇 → 双王镇 → 凤鸣集 → 明月峰 → 峨眉山'
+loop_count: 1
+loop_interval: 0
+starting_map: 洛阳
+steps:
+- type: move
+  at_map: 洛阳
+  path:
+  - [10, 18]
+  - [14, 22]
+  - [18, 19]
+  - [18, 5]
+  - [13, 5]
+  - [4, 5]
+  - [3, 6]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 落霞镇
+- type: move
+  at_map: 落霞镇
+  path:
+  - [19, 26]
+  - [23, 30]
+  - [30, 30]
+  - [29, 35]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: move
+  at_map: 落霞镇
+  path:
+  - [29, 35]
+  - [27, 30]
+  - [5, 30]
+  - [0, 27]
+- type: enter_map
+  map: 华山
+- type: move
+  at_map: 华山
+  path:
+  - [41, 28]
+  - [39, 22]
+  - [32, 22]
+  - [29, 19]
+  - [31, 14]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 南阳渡
+- type: move
+  at_map: 南阳渡
+  path:
+  - [28, 17]
+  - [26, 12]
+  - [26, 5]
+  - [17, 5]
+  - [14, 6]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 姑苏
+- type: move
+  at_map: 姑苏
+  path:
+  - [17, 11]
+  - [19, 17]
+  - [32, 17]
+  - [32, 23]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 杭州
+- type: move
+  at_map: 杭州
+  path:
+  - [31, 13]
+  - [27, 15]
+  - [25, 20]
+  - [25, 25]
+  - [19, 26]
+  - [15, 28]
+  - [14, 32]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 泉州
+- type: move
+  at_map: 泉州
+  path:
+  - [16, 11]
+  - [18, 7]
+  - [17, 1]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 龙泉镇
+- type: move
+  at_map: 龙泉镇
+  path:
+  - [12, 7]
+  - [11, 12]
+  - [12, 18]
+  - [11, 19]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 双王镇
+- type: move
+  at_map: 双王镇
+  path:
+  - [11, 23]
+  - [17, 24]
+  - [22, 27]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 凤鸣集
+- type: move
+  at_map: 凤鸣集
+  path:
+  - [9, 22]
+  - [5, 19]
+  - [5, 2]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 明月峰
+- type: move
+  at_map: 明月峰
+  path:
+  - [26, 4]
+  - [22, 4]
+  - [17, 1]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 峨眉山
+- type: move
+  at_map: 峨眉山
+  path:
+  - [41, 19]
+  - [37, 20]
+- type: button
+  name: table_2
+  skip: 1
+- type: button
+  name: chat_2
+  delay: 1
+- type: travel
+  to: 返回洛阳

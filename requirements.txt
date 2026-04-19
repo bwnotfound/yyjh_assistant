@@ -1,8 +1,10 @@
 pywin32
 tqdm
 opencv-python
+scikit-image
+Pillow
+PyYAML
+PySide6
+pynput
 # cnocr
 # cnocr[ort-gpu]
-scikit-image
-pyside6
-pynput

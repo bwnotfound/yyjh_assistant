@@ -5,6 +5,12 @@
     - 鼠标屏幕坐标 → Win32 ScreenToClient(render_wnd) → 客户区像素 → 除以客户区尺寸归一化
     - 所有坐标调用统一走 Win32 API（GetCursorPos / ScreenToClient / GetClientRect），
       确保和 render_wnd 本身在同一套坐标系下，不受 Qt/进程 DPI awareness 影响。
+
+两种模式:
+    - 普通模式（默认）: 非模态，可随时采样，"复制选中 JSON"导出
+    - 选择模式 (selection_mode=True): 模态使用，外部通过 exec() 调用，
+      采满 expected_count 条后可点"确认选择"关闭对话框；
+      调用方用 result_records() 取回结果。
 """
 
 from __future__ import annotations
@@ -84,11 +90,11 @@ class PositionPickerDialog(QDialog):
     """
     取位置工具对话框。
 
-    使用流程:
-      1. 点"开始监听"
-      2. 将鼠标移到 MuMu 窗口内的目标位置
-      3. 按快捷键（默认 F8）记录一条：归一化坐标 + 像素 RGB
-      4. 在表格选中若干行，"复制选中 JSON" 得到可粘贴的片段
+    使用（选择模式）:
+        dlg = PositionPickerDialog(mumu, selection_mode=True, expected_count=2,
+                                    selection_labels=["图标中心", "跳转按钮"])
+        if dlg.exec() == QDialog.Accepted:
+            records = dlg.result_records()
     """
 
     def __init__(
@@ -96,21 +102,34 @@ class PositionPickerDialog(QDialog):
         mumu: Mumu,
         parent=None,
         hotkey: str = DEFAULT_HOTKEY,
+        selection_mode: bool = False,
+        expected_count: int = 0,
+        selection_labels: Optional[list[str]] = None,
     ) -> None:
         super().__init__(parent, Qt.Dialog | Qt.WindowStaysOnTopHint)
         self.setWindowTitle("取位置工具")
-        self.resize(680, 460)
+        self.resize(680, 480)
 
         self._mumu = mumu
         self._records: list[PickRecord] = []
         self._listener = None  # pynput GlobalHotKeys
         self._hotkey = hotkey
 
+        self._selection_mode = selection_mode
+        self._expected_count = expected_count
+        self._selection_labels = selection_labels or []
+
         self._bridge = _HotkeyBridge()
         self._bridge.triggered.connect(self._on_pick)  # 在主线程执行
 
         self._build_ui()
         self._refresh_status()
+
+    # ---------------- 对外 ----------------
+
+    def result_records(self) -> list[PickRecord]:
+        """选择模式下 exec() 返回后取结果"""
+        return list(self._records)
 
     # ---------------- UI ----------------
 
@@ -120,10 +139,13 @@ class PositionPickerDialog(QDialog):
         layout.setSpacing(8)
 
         # 顶部说明
-        tip = QLabel(
+        tip_text = (
             "操作：① 点「开始监听」 ② 把鼠标悬停到 MuMu 游戏画面上的目标位置 "
             "③ 按快捷键记录一条。"
         )
+        if self._selection_mode:
+            tip_text += f"\n【选择模式】需要录入 {self._expected_count} 个点，按顺序记录后点「确认选择」。"
+        tip = QLabel(tip_text)
         tip.setWordWrap(True)
         layout.addWidget(tip)
 
@@ -143,17 +165,32 @@ class PositionPickerDialog(QDialog):
         self._status_label = QLabel("")
         layout.addWidget(self._status_label)
 
+        # 选择模式下：next label 高亮提示
+        self._next_label = QLabel("")
+        if self._selection_mode:
+            self._next_label.setStyleSheet("font-weight: bold; color: #0066cc;")
+            layout.addWidget(self._next_label)
+
         # 表格
-        self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["#", "归一化 (x, y)", "RGB", "颜色"])
+        self._table = QTableWidget(0, 5 if self._selection_mode else 4)
+        headers = ["#", "归一化 (x, y)", "RGB", "颜色"]
+        if self._selection_mode:
+            headers.insert(1, "用途")
+        self._table.setHorizontalHeaderLabels(headers)
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        if self._selection_mode:
+            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.Stretch)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        else:
+            header.setSectionResizeMode(1, QHeaderView.Stretch)
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         layout.addWidget(self._table, 1)
 
         # 按钮栏
@@ -163,15 +200,31 @@ class PositionPickerDialog(QDialog):
         self._btn_start.toggled.connect(self._on_toggle_listener)
         btns.addWidget(self._btn_start)
 
+        self._btn_undo = QPushButton("撤销最后一条")
+        self._btn_undo.clicked.connect(self._on_undo)
+        btns.addWidget(self._btn_undo)
+
         btn_clear = QPushButton("清空")
         btn_clear.clicked.connect(self._on_clear)
         btns.addWidget(btn_clear)
 
-        btn_copy = QPushButton("复制选中 JSON")
-        btn_copy.clicked.connect(self._on_copy_selected)
-        btns.addWidget(btn_copy)
+        if not self._selection_mode:
+            btn_copy = QPushButton("复制选中 JSON")
+            btn_copy.clicked.connect(self._on_copy_selected)
+            btns.addWidget(btn_copy)
 
         btns.addStretch(1)
+
+        if self._selection_mode:
+            self._btn_confirm = QPushButton("确认选择")
+            self._btn_confirm.setEnabled(False)
+            self._btn_confirm.clicked.connect(self._on_confirm)
+            btns.addWidget(self._btn_confirm)
+
+            btn_cancel = QPushButton("取消")
+            btn_cancel.clicked.connect(self.reject)
+            btns.addWidget(btn_cancel)
+
         layout.addLayout(btns)
 
     def _refresh_status(self) -> None:
@@ -181,7 +234,27 @@ class PositionPickerDialog(QDialog):
             f"监听={'ON' if self._listener else 'OFF'}",
             f"已记录={len(self._records)}",
         ]
+        if self._selection_mode:
+            parts.append(f"需要={self._expected_count}")
         self._status_label.setText(" | ".join(parts))
+
+        if self._selection_mode:
+            n = len(self._records)
+            if n < self._expected_count:
+                if n < len(self._selection_labels):
+                    self._next_label.setText(
+                        f"▶ 下一步: 录入 [{self._selection_labels[n]}]"
+                    )
+                else:
+                    self._next_label.setText(
+                        f"▶ 下一步: 录入第 {n + 1} / {self._expected_count} 个"
+                    )
+            else:
+                self._next_label.setText(
+                    f"✔ 已达到 {self._expected_count} 个，点「确认选择」提交。"
+                )
+            if hasattr(self, "_btn_confirm"):
+                self._btn_confirm.setEnabled(n == self._expected_count)
 
     # ---------------- 监听启停 ----------------
 
@@ -239,6 +312,11 @@ class PositionPickerDialog(QDialog):
 
     def _on_pick(self) -> None:
         """在主线程被 signal 唤起，完成一次采样"""
+        if self._selection_mode and len(self._records) >= self._expected_count:
+            self._status_label.setText(
+                "已达到期望数量，多余采样忽略。如需修改请先撤销或清空。"
+            )
+            return
         try:
             rec = self._sample_once()
         except Exception:
@@ -288,17 +366,46 @@ class PositionPickerDialog(QDialog):
     def _append_row(self, rec: PickRecord) -> None:
         row = self._table.rowCount()
         self._table.insertRow(row)
-        self._table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
-        self._table.setItem(row, 1, QTableWidgetItem(f"({rec.nx:.4f}, {rec.ny:.4f})"))
-        self._table.setItem(row, 2, QTableWidgetItem(f"{rec.r}, {rec.g}, {rec.b}"))
+        col = 0
+        self._table.setItem(row, col, QTableWidgetItem(str(row + 1)))
+        col += 1
+        if self._selection_mode:
+            label = (
+                self._selection_labels[row]
+                if row < len(self._selection_labels)
+                else f"#{row + 1}"
+            )
+            self._table.setItem(row, col, QTableWidgetItem(label))
+            col += 1
+        self._table.setItem(row, col, QTableWidgetItem(f"({rec.nx:.4f}, {rec.ny:.4f})"))
+        col += 1
+        self._table.setItem(row, col, QTableWidgetItem(f"{rec.r}, {rec.g}, {rec.b}"))
+        col += 1
         swatch = QTableWidgetItem("")
         swatch.setBackground(QColor(rec.r, rec.g, rec.b))
-        self._table.setItem(row, 3, swatch)
+        self._table.setItem(row, col, swatch)
+
+    def _on_undo(self) -> None:
+        if not self._records:
+            return
+        self._records.pop()
+        self._table.removeRow(self._table.rowCount() - 1)
+        self._refresh_status()
 
     def _on_clear(self) -> None:
         self._records.clear()
         self._table.setRowCount(0)
         self._refresh_status()
+
+    def _on_confirm(self) -> None:
+        if len(self._records) != self._expected_count:
+            QMessageBox.warning(
+                self,
+                "数量不符",
+                f"当前记录 {len(self._records)} 条，需要 {self._expected_count} 条。",
+            )
+            return
+        self.accept()
 
     def _on_copy_selected(self) -> None:
         rows = sorted({idx.row() for idx in self._table.selectedIndexes()})

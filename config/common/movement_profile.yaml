@@ -1,0 +1,13 @@
+profiles:
+  1920x1080:
+    character_pos: [0.4417, 0.4944]
+    vision_sizes:
+      小:
+        block_size: [0.08333333333333333, 0.07407407407407407]
+        move_max_num: 8
+        vision_delta_limit: 8
+      中:
+        block_size: [0.10520833333333333, 0.09351851851851851]
+        move_max_num: 10
+        vision_delta_limit: 8
+    ui_positions: {buy_item_cols: 2, buy_item_rows: 5}

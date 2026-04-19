@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
-import threading
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -18,7 +17,10 @@ from PySide6.QtWidgets import (
 
 from utils import Mumu, MumuError
 
-from ..position_picker import PositionPickerDialog
+from app.views.map_registry_dialog import MapRegistryDialog
+from app.views.movement_profile_dialog import MovementProfileDialog
+from app.views.position_picker import PositionPickerDialog
+from app.views.routine_runner_dialog import RoutineRunnerDialog
 
 log = logging.getLogger(__name__)
 
@@ -27,10 +29,13 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("烟雨江湖助手")
-        self.resize(420, 240)
+        self.resize(420, 400)
 
         self._mumu: Optional[Mumu] = None
         self._picker: Optional[PositionPickerDialog] = None
+        self._map_registry_dlg: Optional[MapRegistryDialog] = None
+        self._movement_profile_dlg: Optional[MovementProfileDialog] = None
+        self._runner_dlg: Optional[RoutineRunnerDialog] = None
 
         self._build_ui()
 
@@ -51,6 +56,21 @@ class MainWindow(QMainWindow):
         btn_picker.clicked.connect(self._open_picker)
         layout.addWidget(btn_picker)
 
+        btn_map = QPushButton("添加地图信息")
+        btn_map.setMinimumHeight(40)
+        btn_map.clicked.connect(self._open_map_registry)
+        layout.addWidget(btn_map)
+
+        btn_mov = QPushButton("运动配置")
+        btn_mov.setMinimumHeight(40)
+        btn_mov.clicked.connect(self._open_movement_profile)
+        layout.addWidget(btn_mov)
+
+        btn_run = QPushButton("执行 Routine")
+        btn_run.setMinimumHeight(40)
+        btn_run.clicked.connect(self._open_runner)
+        layout.addWidget(btn_run)
+
         layout.addStretch(1)
 
         self.statusBar().showMessage("就绪")
@@ -66,19 +86,23 @@ class MainWindow(QMainWindow):
             log.info("Mumu 就绪")
         return self._mumu
 
-    # ---------------- 功能入口 ----------------
-
-    def _open_picker(self) -> None:
+    def _try_get_mumu(self) -> Optional[Mumu]:
+        """统一的获取 + 错误弹窗"""
         try:
-            mumu = self.get_mumu()
+            return self.get_mumu()
         except MumuError as e:
             QMessageBox.critical(self, "MuMu 连接失败", str(e))
-            return
         except Exception as e:
             log.exception("Mumu 初始化异常")
             QMessageBox.critical(self, "MuMu 初始化异常", f"{type(e).__name__}: {e}")
-            return
+        return None
 
+    # ---------------- 功能入口 ----------------
+
+    def _open_picker(self) -> None:
+        mumu = self._try_get_mumu()
+        if mumu is None:
+            return
         if self._picker is None:
             self._picker = PositionPickerDialog(mumu, parent=self)
             self._picker.setAttribute(Qt.WA_DeleteOnClose, False)
@@ -86,31 +110,53 @@ class MainWindow(QMainWindow):
         self._picker.raise_()
         self._picker.activateWindow()
 
+    def _open_map_registry(self) -> None:
+        mumu = self._try_get_mumu()
+        if mumu is None:
+            return
+        if self._map_registry_dlg is None:
+            self._map_registry_dlg = MapRegistryDialog(mumu, parent=self)
+            self._map_registry_dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._map_registry_dlg.show()
+        self._map_registry_dlg.raise_()
+        self._map_registry_dlg.activateWindow()
+
+    def _open_movement_profile(self) -> None:
+        mumu = self._try_get_mumu()
+        if mumu is None:
+            return
+        if self._movement_profile_dlg is None:
+            self._movement_profile_dlg = MovementProfileDialog(mumu, parent=self)
+            self._movement_profile_dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._movement_profile_dlg.show()
+        self._movement_profile_dlg.raise_()
+        self._movement_profile_dlg.activateWindow()
+
+    def _open_runner(self) -> None:
+        mumu = self._try_get_mumu()
+        if mumu is None:
+            return
+        if self._runner_dlg is None:
+            self._runner_dlg = RoutineRunnerDialog(mumu, parent=self)
+            self._runner_dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._runner_dlg.show()
+        self._runner_dlg.raise_()
+        self._runner_dlg.activateWindow()
+
     # ---------------- 资源 ----------------
 
     def closeEvent(self, ev) -> None:
-        if self._picker is not None:
+        for dlg in (
+            self._picker,
+            self._map_registry_dlg,
+            self._movement_profile_dlg,
+            self._runner_dlg,
+        ):
+            if dlg is not None:
+                dlg.close()
+        if self._mumu is not None:
             try:
-                self._picker.close()
+                self._mumu.close()
             except Exception:
-                log.exception("关闭 picker 失败")
-
-        # 由于上面已经把 close 超时压到 ~0.6s,进程几乎不会被留下孤儿。
-        # Mumu 清理放到后台 daemon 线程:即使它还没做完,UI 也能立刻关掉;
-        mumu = self._mumu
-        self._mumu = None
-        if mumu is not None:
-            threading.Thread(
-                target=self._shutdown_mumu_bg,
-                args=(mumu,),
-                daemon=True,
-            ).start()
-
+                log.exception("关闭 Mumu 失败")
         super().closeEvent(ev)
-
-    @staticmethod
-    def _shutdown_mumu_bg(mumu) -> None:
-        try:
-            mumu.close()
-        except Exception:
-            log.exception("后台关闭 Mumu 失败")

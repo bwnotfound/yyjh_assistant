@@ -1,1 +1,1 @@
-from .window import PositionPickerDialog
+from .window import PositionPickerDialog, PickRecord

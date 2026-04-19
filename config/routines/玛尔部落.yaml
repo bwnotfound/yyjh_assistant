@@ -1,0 +1,38 @@
+name: 玛尔部落
+description: '迁移自旧 json，途经: 玛尔部落'
+loop_count: 1
+loop_interval: 0
+starting_map: 玛尔部落
+steps:
+- type: move
+  at_map: 玛尔部落
+  path:
+  - [20, 24]
+  - [20, 23]
+- type: button
+  name: table_3
+  delay: 0.75
+- type: move
+  at_map: 玛尔部落
+  path:
+  - [20, 23]
+  - [20, 26]
+- type: button
+  name: table_3
+  delay: 0.75
+- type: move
+  at_map: 玛尔部落
+  path:
+  - [20, 26]
+  - [16, 25]
+- type: button
+  name: table_3
+  delay: 0.75
+- type: move
+  at_map: 玛尔部落
+  path:
+  - [16, 25]
+  - [20, 24]
+- type: button
+  name: table_3
+  delay: 0.75

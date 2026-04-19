@@ -1,0 +1,40 @@
+name: 刷蛇
+description: '迁移自旧 json，途经: 凤鸣集'
+loop_count: 1
+loop_interval: 0
+starting_map: 凤鸣集
+steps:
+- type: move
+  at_map: 凤鸣集
+  path:
+  - [2, 25]
+  - [1, 25]
+- type: button
+  name: table_3
+  delay: 1.3
+- type: move
+  at_map: 凤鸣集
+  path:
+  - [1, 25]
+  - [3, 20]
+  - [3, 16]
+- type: button
+  name: table_3
+  delay: 1.3
+- type: move
+  at_map: 凤鸣集
+  path:
+  - [3, 16]
+  - [6, 15]
+- type: button
+  name: table_3
+  delay: 1.3
+- type: move
+  at_map: 凤鸣集
+  path:
+  - [6, 15]
+  - [5, 20]
+  - [2, 25]
+- type: button
+  name: table_3
+  delay: 1.3

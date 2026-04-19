@@ -1,0 +1,128 @@
+bigmap_constraints: {btn_floor_y: 0.9428, btn_floor_eps: 0.015}
+profiles:
+  1920x1080:
+    bigmap_size_pixel: [2600, 1450]
+    locations:
+      敦煌:
+        icon_on_bigmap_pixel: [692.07, 498.8]
+        btn_offset_pixel: [-265.76, 278.67]
+        recorded_at_corner: NW
+      落霞镇:
+        icon_on_bigmap_pixel: [1247.46, 692.89]
+        btn_offset_pixel: [-271.19, 271.08]
+        recorded_at_corner: NW
+      嵩山:
+        icon_on_bigmap_pixel: [1472.0, 628.92]
+        btn_offset_pixel: [-267.93, 273.25]
+        recorded_at_corner: NW
+        map_size: [21, 37]
+      泰山:
+        icon_on_bigmap_pixel: [1825.49, 660.36]
+        btn_offset_pixel: [-272.27, 275.42]
+        recorded_at_corner: NE
+      幽州:
+        icon_on_bigmap_pixel: [1785.36, 439.16]
+        btn_offset_pixel: [-275.53, 270.0]
+        recorded_at_corner: NE
+      洛阳:
+        icon_on_bigmap_pixel: [1493.69, 765.54]
+        btn_offset_pixel: [-269.02, 250.48]
+        recorded_at_corner: NW
+      十方集:
+        icon_on_bigmap_pixel: [374.24, 333.98]
+        btn_offset_pixel: [271.19, 274.34]
+        recorded_at_corner: NW
+        map_size: [34, 29]
+      鄯善:
+        icon_on_bigmap_pixel: [863.46, 407.71]
+        btn_offset_pixel: [-267.93, 277.59]
+        recorded_at_corner: NW
+      沧州:
+        icon_on_bigmap_pixel: [1651.93, 632.17]
+        btn_offset_pixel: [-265.76, 265.66]
+        recorded_at_corner: NE
+      塞北:
+        icon_on_bigmap_pixel: [1367.73, 255.9]
+        btn_offset_pixel: [-270.1, 272.17]
+        recorded_at_corner: NE
+      仰天岭:
+        icon_on_bigmap_pixel: [1731.12, 171.33]
+        btn_offset_pixel: [-265.76, 336.14]
+        recorded_at_corner: NE
+      黑水沟:
+        icon_on_bigmap_pixel: [2253.97, 160.48]
+        btn_offset_pixel: [-264.68, 346.99]
+        recorded_at_corner: NE
+      姑苏:
+        icon_on_bigmap_pixel: [1869.97, 863.37]
+        btn_offset_pixel: [-267.93, 274.34]
+        recorded_at_corner: SE
+      杭州:
+        icon_on_bigmap_pixel: [1822.24, 1022.77]
+        btn_offset_pixel: [-274.44, 280.84]
+        recorded_at_corner: SE
+      泉州:
+        icon_on_bigmap_pixel: [1902.51, 1114.94]
+        btn_offset_pixel: [-272.27, 272.17]
+        recorded_at_corner: SE
+      龙泉镇:
+        icon_on_bigmap_pixel: [988.2, 1090.0]
+        btn_offset_pixel: [-280.95, 278.67]
+        recorded_at_corner: SW
+        map_size: [27, 24]
+      双王镇:
+        icon_on_bigmap_pixel: [1405.69, 1029.28]
+        btn_offset_pixel: [-272.27, 276.51]
+        recorded_at_corner: SE
+      南阳渡:
+        icon_on_bigmap_pixel: [1410.03, 918.67]
+        btn_offset_pixel: [-271.19, 272.17]
+        recorded_at_corner: SE
+      南岭:
+        icon_on_bigmap_pixel: [1352.54, 1317.71]
+        btn_offset_pixel: [-273.36, 68.31]
+        recorded_at_corner: SE
+      太乙山:
+        icon_on_bigmap_pixel: [1239.73, 855.78]
+        btn_offset_pixel: [-270.1, 267.83]
+        recorded_at_corner: SE
+      凤鸣集:
+        icon_on_bigmap_pixel: [1183.32, 1017.35]
+        btn_offset_pixel: [-271.19, 277.59]
+        recorded_at_corner: SE
+      明月峰:
+        icon_on_bigmap_pixel: [1210.58, 1140.96]
+        btn_offset_pixel: [-267.93, 240.72]
+        recorded_at_corner: SW
+      成都:
+        icon_on_bigmap_pixel: [993.63, 1099.76]
+        btn_offset_pixel: [-266.85, 274.34]
+        recorded_at_corner: SW
+      峨眉山:
+        icon_on_bigmap_pixel: [795.12, 1223.37]
+        btn_offset_pixel: [-267.93, 166.99]
+        recorded_at_corner: SW
+      大理:
+        icon_on_bigmap_pixel: [984.95, 1310.12]
+        btn_offset_pixel: [-265.76, 75.9]
+        recorded_at_corner: SW
+      屋山:
+        icon_on_bigmap_pixel: [569.49, 1152.89]
+        btn_offset_pixel: [-265.76, 236.39]
+        recorded_at_corner: SW
+      大雪山:
+        icon_on_bigmap_pixel: [531.53, 805.9]
+        btn_offset_pixel: [-271.19, 270.0]
+        recorded_at_corner: SW
+      武神殿:
+        icon_on_bigmap_pixel: [546.71, 610.72]
+        btn_offset_pixel: [-264.68, 276.51]
+        recorded_at_corner: SW
+      乌思雪原:
+        icon_on_bigmap_pixel: [267.93, 697.47]
+        btn_offset_pixel: [11.93, 188.67]
+        recorded_at_corner: SW
+      华山: {}
+      返回洛阳: {}
+      玛尔部落:
+        map_size: [34, 29]
