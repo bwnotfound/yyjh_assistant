@@ -4,3 +4,5 @@ opencv-python
 # cnocr
 # cnocr[ort-gpu]
 scikit-image
+pyside6
+pynput
