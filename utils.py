@@ -138,9 +138,11 @@ class Mumu:
         vm_index=0,
         window_size=(1758, 984),
         full_app_window_size=(1920, 1030),
-        window_name="MuMu模拟器",
+        window_names=None,
     ):
-        self.window_name = window_name
+        if window_names is None:
+            window_names = ["MuMu模拟器", "MuMu安卓设备"]
+        self.window_names = window_names
         if mumu_dir_path.endswith(".exe"):
             mumu_dir_path = os.path.dirname(os.path.dirname(mumu_dir_path))
         self.mumu_dir_path = mumu_dir_path
@@ -221,8 +223,8 @@ class Mumu:
         self._adb_shell = SyncInteractiveSession(["cmd"], encoding="gbk")
         port = str(self.vm_index * 32 + 16384)
         adb_path = f'"{os.path.join(self.mumu_dir_path, "shell", "adb.exe")}"'
-        self._adb_shell.send_command(f"{adb_path} connect 127.0.0.1:{port}")
-        self._adb_shell.send_command(f"{adb_path} -s 127.0.0.1:{port} shell")
+        tem = self._adb_shell.send_command(f"{adb_path} connect 127.0.0.1:{port}")
+        tem = self._adb_shell.send_command(f"{adb_path} -s 127.0.0.1:{port} shell")
 
     def run_command(self, command):
         if command[0] == "shell":
@@ -247,10 +249,14 @@ class Mumu:
         lt.sort()
         hwnd = None
         for t in lt:
-            if (t.find(self.window_name)) >= 0:
-                # if (t.find("Edge")) >= 0:
-                hwnd = win32gui.FindWindow(None, t)
-                break
+            for window_name in self.window_names:
+                if (t.find(window_name)) >= 0:
+                    # if (t.find("Edge")) >= 0:
+                    hwnd = win32gui.FindWindow(None, t)
+                    break
+            else:
+                continue
+            break
         # hwnd = win32gui.FindWindow(None, "MuMu模拟器12")
         if hwnd:
             return hwnd
@@ -731,18 +737,162 @@ def get_next_btn_pos(pos):
     return new_pos
 
 
+character_pos = (848, 534)
+block_width, block_height = 160, 80
+vision_size = "小"
+assert vision_size == "小", "目前只支持小视野"
+if vision_size == "小":
+    move_max_num = 8
+    vision_delta_limit = 8
+
+
+def move_seq_parse(action_list):
+    start_pos = action_list[0]
+    action_list = action_list[1:]
+    result = [start_pos]
+    last_x, last_y = start_pos
+    last_tgt_x, last_tgt_y = None, None
+    is_fly = False
+    for tgt_x, tgt_y in action_list:
+        if tgt_x == -1:
+            if last_tgt_x is not None:
+                result.append((last_tgt_x, last_tgt_y))
+                last_x, last_y = last_tgt_x, last_tgt_y
+                last_tgt_x, last_tgt_y = None, None
+            result.append((-1, -1))
+            is_fly = True
+            continue
+        if is_fly:
+            is_fly = False
+            result.append((tgt_x, tgt_y))
+            last_x, last_y = tgt_x, tgt_y
+            assert last_tgt_x is None
+            continue
+        if abs(tgt_x - last_x) + abs(tgt_y - last_y) > move_max_num:
+            if last_tgt_x is not None:
+                result.append((last_tgt_x, last_tgt_y))
+                last_x, last_y = last_tgt_x, last_tgt_y
+                last_tgt_x, last_tgt_y = None, None
+            if abs(tgt_x - last_x) + abs(tgt_y - last_y) > move_max_num:
+                if not (tgt_x == last_x or tgt_y == last_y):
+                    return """行走路径不合法，action_list: {}中的[{},{}]不合法
+过长的运动必须保证当前坐标点和上一个坐标点有一个维度是相同的，保证程序能分批运动确保正确性""".format(
+                        action_list, tgt_x, tgt_y
+                    )
+                if tgt_x == last_x:
+                    while abs(tgt_y - last_y) > move_max_num:
+                        if tgt_y > last_y:
+                            last_y += move_max_num
+                        else:
+                            last_y -= move_max_num
+                        result.append((last_x, last_y))
+                else:
+                    while abs(tgt_x - last_x) > move_max_num:
+                        if tgt_x > last_x:
+                            last_x += move_max_num
+                        else:
+                            last_x -= move_max_num
+                        result.append((last_x, last_y))
+                if last_x == tgt_x and last_y == tgt_y:
+                    last_tgt_x, last_tgt_y = None, None
+                else:
+                    last_tgt_x, last_tgt_y = tgt_x, tgt_y
+            else:
+                last_tgt_x, last_tgt_y = tgt_x, tgt_y
+        else:
+            last_tgt_x, last_tgt_y = tgt_x, tgt_y
+    if last_tgt_x is not None and (last_x != last_tgt_x or last_y != last_tgt_y):
+        result.append((last_tgt_x, last_tgt_y))
+    return result
+
+
+def move_seq_exec(action_list, mumu: Mumu, map_size=None):
+    if map_size is None:
+        map_size = (999, 999)
+    map_endpoint_list = [
+        (0, 0),
+        (map_size[0], 0),
+        (0, map_size[1]),
+        (map_size[0] - 1, map_size[1] - 1),
+    ]
+    limit_case_pos_calibrate_list = [
+        (0, -0.5),
+        (0.5, 0),
+        (-0.5, 0),
+        (0, 0.5),
+    ]
+    is_fly = False
+    for i in range(1, len(action_list)):
+        tgt_x, tgt_y = action_list[i]
+        pre_pos = (
+            action_list[i - 1] if action_list[i - 1][0] != -1 else action_list[i - 2]
+        )
+        min_delta = 999
+        min_j = None
+        for j, pos in enumerate(map_endpoint_list):
+            delta = abs(pos[0] - pre_pos[0]) + abs(pos[1] - pre_pos[1])
+            if delta > vision_delta_limit:
+                continue
+            if delta < min_delta:
+                min_delta = delta
+                min_j = j
+        if min_j is not None:
+            if min_j == 3:
+                min_delta = abs(pre_pos[0] - (map_endpoint_list[3][0] + 1)) + abs(
+                    pre_pos[1] - (map_endpoint_list[3][1] + 1)
+                )
+            offset = vision_delta_limit - min_delta
+            if min_j == 3:
+                offset += 2
+            new_character_pos = (
+                character_pos[0]
+                + int(limit_case_pos_calibrate_list[min_j][0] * block_width * offset),
+                character_pos[1]
+                + int(limit_case_pos_calibrate_list[min_j][1] * block_height * offset),
+            )
+        else:
+            new_character_pos = character_pos
+        if tgt_x == -1 and tgt_y == -1:
+            mumu.click(new_character_pos, 0.35)
+            is_fly = True
+            continue
+        x_block_cnt, y_block_cnt = (
+            tgt_x - action_list[i - 1 if not is_fly else i - 2][0],
+            tgt_y - action_list[i - 1 if not is_fly else i - 2][1],
+        )
+
+        x, y = (
+            new_character_pos[0]
+            + x_block_cnt * block_width // 2
+            - y_block_cnt * block_width // 2,
+            new_character_pos[1]
+            + x_block_cnt * block_height // 2
+            + y_block_cnt * block_height // 2,
+        )
+        img = mumu.capture_window()
+        mumu.click((x, y), 0.2)
+        wait_pos_change(mumu, threshold=0.01, fps=10, img=img, max_wait_time=3)
+        if is_fly:
+            is_fly = False
+            time.sleep(0.8)
+        wait_screen_change(mumu, reverse=True, threshold=0.1, fps=10, raw_diff=True)
+
+
 if __name__ == "__main__":
-    mumu = Mumu("D:/MuMu Player 12/shell/MuMuManager.exe")
-    # mumu = Mumu("D:/MuMu Player 12/shell/MuMuManager.exe", window_size=(554, 984))
-    # mumu = Mumu("D:/MuMu Player 12/shell/MuMuManager.exe", window_size=(554, 984), window_name="画图")
+    mumu = Mumu("D:/MuMuPlayer/nx_device/12.0/shell/MuMuManager.exe")
+    # mumu = Mumu("D:/MuMuPlayer/nx_device/12.0/shell/MuMuManager.exe", window_size=(554, 984))
+    # mumu = Mumu("D:/MuMuPlayer/nx_device/12.0/shell/MuMuManager.exe", window_size=(554, 984), window_names=["画图"])
     # mumu.click((1700, 321))
-    # mumu.click((778, 573))
+    # mumu.click((834, 616))
+    # move_seq_exec([[2, 29], [3, 28]], mumu=mumu, map_size=[34, 29])
+    # move_seq_exec([[0, 0], [1, 2]], mumu=mumu, map_size=[34, 29])
+    move_seq_exec([[32, 29], [29, 29]], mumu=mumu, map_size=[34, 29])
     # from bwtools.log import TimeCounter
 
     # with TimeCounter(""):
     #     for _ in range(10):
     #         mumu.click((778, 573))
-    wait_screen_change(mumu, reverse=True, threshold=0.1, fps=10, raw_diff=True)
+    # wait_screen_change(mumu, reverse=True, threshold=0.1, fps=10, raw_diff=True)
     # background_click(
     #     mumu.hwnd, 979, 466, click_type="left", delay=0.1
     # )  # 在窗口内点击

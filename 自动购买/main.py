@@ -1,14 +1,29 @@
 import time
 import sys, os
 import json
+import argparse
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/..")
-from utils import Mumu, wait_screen_change, wait_pos_change, get_next_btn_pos
+from utils import (
+    Mumu,
+    wait_screen_change,
+    wait_pos_change,
+    get_next_btn_pos,
+    move_seq_exec,
+)
 
 start_map_index = 0
 start_action_index = 0
 config_name = "config.json"
+# config_name = "刷蛇.json"
 # config_name = "杀牛.json"
+# config_name = "十方集.json"
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--config_name", type=str, default=None)
+args = parser.parse_args()
+if args.config_name is not None:
+    config_name = args.config_name
 
 character_pos = (848, 534)
 block_width, block_height = 160, 80
@@ -117,67 +132,67 @@ def move_seq_parse(action_list):
     return result
 
 
-def move_seq_exec(action_list, mumu: Mumu, map_size=None):
-    if map_size is None:
-        map_size = (999, 999)
-    is_fly = False
-    for i in range(1, len(action_list)):
-        tgt_x, tgt_y = action_list[i]
-        pre_pos = (
-            action_list[i - 1] if action_list[i - 1][0] != -1 else action_list[i - 2]
-        )
-        if (
-            sum(pre_pos) < vision_min_delta_limit
-            or sum(map_size) - sum(pre_pos) < vision_max_delta_limit
-        ):
-            new_character_pos = (
-                character_pos[0],
-                character_pos[1]
-                + max(0, sum(pre_pos) - (sum(map_size) - vision_max_delta_limit))
-                * block_height
-                // 2
-                + min(0, sum(pre_pos) - vision_min_delta_limit) * block_height // 2,
-            )
-        elif (abs(pre_pos[0] - map_size[0]) + pre_pos[1]) < vision_min_delta_limit:
-            new_character_pos = (
-                character_pos[0]
-                - min(
-                    0,
-                    (abs(pre_pos[0] - map_size[0]) + pre_pos[1])
-                    - vision_min_delta_limit,
-                )
-                * block_width
-                // 2,
-                character_pos[1],
-            )
-        elif (pre_pos[0] + abs(pre_pos[1] - map_size[1])) < vision_max_delta_limit:
-            assert False, "西南方向的地图极点暂不支持"
-        else:
-            new_character_pos = character_pos
-        if tgt_x == -1 and tgt_y == -1:
-            mumu.click(new_character_pos, 0.35)
-            is_fly = True
-            continue
-        x_block_cnt, y_block_cnt = (
-            tgt_x - action_list[i - 1 if not is_fly else i - 2][0],
-            tgt_y - action_list[i - 1 if not is_fly else i - 2][1],
-        )
+# def move_seq_exec(action_list, mumu: Mumu, map_size=None):
+#     if map_size is None:
+#         map_size = (999, 999)
+#     is_fly = False
+#     for i in range(1, len(action_list)):
+#         tgt_x, tgt_y = action_list[i]
+#         pre_pos = (
+#             action_list[i - 1] if action_list[i - 1][0] != -1 else action_list[i - 2]
+#         )
+#         if (
+#             sum(pre_pos) < vision_min_delta_limit
+#             or sum(map_size) - sum(pre_pos) < vision_max_delta_limit
+#         ):
+#             new_character_pos = (
+#                 character_pos[0],
+#                 character_pos[1]
+#                 + max(0, sum(pre_pos) - (sum(map_size) - vision_max_delta_limit))
+#                 * block_height
+#                 // 2
+#                 + min(0, sum(pre_pos) - vision_min_delta_limit) * block_height // 2,
+#             )
+#         elif (abs(pre_pos[0] - map_size[0]) + pre_pos[1]) < vision_min_delta_limit:
+#             new_character_pos = (
+#                 character_pos[0]
+#                 - min(
+#                     0,
+#                     (abs(pre_pos[0] - map_size[0]) + pre_pos[1])
+#                     - vision_min_delta_limit,
+#                 )
+#                 * block_width
+#                 // 2,
+#                 character_pos[1],
+#             )
+#         elif (pre_pos[0] + abs(pre_pos[1] - map_size[1])) < vision_max_delta_limit:
+#             assert False, "西南方向的地图极点暂不支持"
+#         else:
+#             new_character_pos = character_pos
+#         if tgt_x == -1 and tgt_y == -1:
+#             mumu.click(new_character_pos, 0.35)
+#             is_fly = True
+#             continue
+#         x_block_cnt, y_block_cnt = (
+#             tgt_x - action_list[i - 1 if not is_fly else i - 2][0],
+#             tgt_y - action_list[i - 1 if not is_fly else i - 2][1],
+#         )
 
-        x, y = (
-            new_character_pos[0]
-            + x_block_cnt * block_width // 2
-            - y_block_cnt * block_width // 2,
-            new_character_pos[1]
-            + x_block_cnt * block_height // 2
-            + y_block_cnt * block_height // 2,
-        )
-        img = mumu.capture_window()
-        mumu.click((x, y), 0.2)
-        wait_pos_change(mumu, threshold=0.01, fps=10, img=img, max_wait_time=3)
-        if is_fly:
-            is_fly = False
-            time.sleep(0.8)
-        wait_screen_change(mumu, reverse=True, threshold=0.1, fps=10, raw_diff=True)
+#         x, y = (
+#             new_character_pos[0]
+#             + x_block_cnt * block_width // 2
+#             - y_block_cnt * block_width // 2,
+#             new_character_pos[1]
+#             + x_block_cnt * block_height // 2
+#             + y_block_cnt * block_height // 2,
+#         )
+#         img = mumu.capture_window()
+#         mumu.click((x, y), 0.2)
+#         wait_pos_change(mumu, threshold=0.01, fps=10, img=img, max_wait_time=3)
+#         if is_fly:
+#             is_fly = False
+#             time.sleep(0.8)
+#         wait_screen_change(mumu, reverse=True, threshold=0.1, fps=10, raw_diff=True)
 
 
 def teleport(config, mumu: Mumu):
@@ -222,20 +237,24 @@ def kill_exec(mumu: Mumu):
 
 def custom_action_exec(custom_action_list, mumu: Mumu):
     for action in custom_action_list:
-        if action["mode"] == "button":
-            if action["pos"].startswith("table"):
-                tgt_list = table_btn_pos_list
+        if action["mode"] in ["button", "click"]:
+            if action["mode"] == "button":
+                if action["pos"].startswith("table"):
+                    tgt_list = table_btn_pos_list
+                else:
+                    assert action["pos"].startswith(
+                        "chat"
+                    ), "自定义动作位置必须以table或chat开头"
+                    tgt_list = chat_btn_pos_list
+                index = int(action["pos"].split("_")[1])
+                index -= 1  # 转换为0基索引
+                if index < 0 or index >= len(tgt_list):
+                    raise ValueError(f"自定义动作位置索引超出范围: {index}")
+                pos = tgt_list[index]
             else:
-                assert action["pos"].startswith(
-                    "chat"
-                ), "自定义动作位置必须以table或chat开头"
-                tgt_list = chat_btn_pos_list
-            index = int(action["pos"].split("_")[1])
-            index -= 1  # 转换为0基索引
-            if index < 0 or index >= len(tgt_list):
-                raise ValueError(f"自定义动作位置索引超出范围: {index}")
+                pos = action["pos"]
             start = time.perf_counter()
-            mumu.click(tgt_list[index])
+            mumu.click(pos)
             skip = action.get("skip", 0)
             while skip > 0:
                 mumu.click(blank_btn_pos, delay=screen_change_time_delay)
@@ -250,7 +269,7 @@ def custom_action_exec(custom_action_list, mumu: Mumu):
 
 
 if __name__ == "__main__":
-    mumu = Mumu("D:/MuMu Player 12")
+    mumu = Mumu("D:/MuMuPlayer/nx_device/12.0")
     with open(
         os.path.join(os.path.dirname(__file__), config_name), "r", encoding="utf-8"
     ) as f:

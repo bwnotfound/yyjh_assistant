@@ -3,7 +3,16 @@ import sys, os
 import json
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/..")
-from utils import Mumu, wait_screen_change, Executor, OCR, wait_pos_change
+from tqdm import tqdm
+from utils import (
+    Mumu,
+    wait_screen_change,
+    Executor,
+    
+    OCR,
+    wait_pos_change,
+    get_next_btn_pos,
+)
 
 start_index = 0
 start_action_index = 0
@@ -17,8 +26,8 @@ collect_btn_pos = (1151, 508)
 blank_btn_pos = (1717, 762)
 package_pos = (451, 998)
 ticket_btn_pos = (602, 856)
-symbol_pos = (832, 374)
-symbol_color = (251, 245, 234)
+symbol_pos = (1287, 253)
+symbol_color = (249, 240, 220)
 symbol_color_diff_threshold = 50
 window_origin_size = (1775, 985)
 
@@ -88,7 +97,7 @@ def action_parse(action_list, start_pos):
 
 def action_exec(action_list, mumu: Mumu, ocr: OCR, executor: Executor, map_limit=999):
     is_fly = False
-    for i in range(1, len(action_list)):
+    for i in tqdm(range(1, len(action_list)), leave=False, desc="行走中"):
         tgt_x, tgt_y = action_list[i]
         pre_pos = (
             action_list[i - 1] if action_list[i - 1][0] != -1 else action_list[i - 2]
@@ -135,7 +144,14 @@ def teleport(config, mumu: Mumu):
     mumu.click(package_pos, 1)
     mumu.click(ticket_btn_pos, 1)
     mumu.click(config["next_icon_pos"], 0.7)
-    mumu.click(config["next_btn_pos"], 0.7)
+    mumu.click(
+        (
+            config["next_btn_pos"]
+            if "next_btn_pos" in config
+            else get_next_btn_pos(config["next_icon_pos"])
+        ),
+        0.7,
+    )
 
 
 def collect(mumu: Mumu):
@@ -158,7 +174,7 @@ def collect(mumu: Mumu):
 
 
 if __name__ == "__main__":
-    mumu = Mumu("D:/MuMu Player 12/shell/MuMuManager.exe")
+    mumu = Mumu("D:/MuMuPlayer/nx_device/12.0/shell/MuMuManager.exe")
     # ocr = OCR(mumu)
     # executor = Executor(mumu)
     ocr = None
@@ -230,6 +246,5 @@ if __name__ == "__main__":
             )
             time.sleep(3.5)
     print("所有地图处理完成")
-    mumu.click((1776,994))
+    mumu.click((1776, 994))
     print("保存完成")
-    

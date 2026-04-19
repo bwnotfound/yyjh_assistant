@@ -38,7 +38,7 @@ def is_satisfied_color(x, y, color, threshold=60, img=None):
 
 
 if __name__ == "__main__":
-    mumu = Mumu("D:/MuMu Player 12/shell/MuMuManager.exe")
+    mumu = Mumu("D:/MuMuPlayer/nx_device/12.0/shell/MuMuManager.exe")
     time.sleep(1)
     for i in range(available_count):
         click(chat_btn_x, chat_btn_y, chat_time_sleep)

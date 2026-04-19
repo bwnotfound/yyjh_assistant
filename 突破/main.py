@@ -5,7 +5,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/..")
 from utils import Mumu
 
 
-mumu = Mumu("D:/MuMu Player 12/shell/MuMuManager.exe")
+mumu = Mumu("D:/MuMuPlayer/nx_device/12.0/shell/MuMuManager.exe")
 
 while True:
     try:

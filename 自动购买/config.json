@@ -24,6 +24,28 @@
                 "path": [[20,30],[17,28]],
                 "mode": "buy",
                 "buy": [[1,5]]
+            },
+            {
+                "name": "商票",
+                "path": [[17,28],[18,22],[28,22],[28,13],[31,12]],
+                "mode": "custom",
+                "actions": [
+                    {
+                        "mode": "button",
+                        "pos": "table_2"
+                    },
+                    {
+                        "mode": "button",
+                        "pos": "chat_1",
+                        "delay": 1.0
+                    },
+                    {
+                        "mode": "click",
+                        "pos": [1084, 837],
+                        "delay": 1.0,
+                        "skip": 1
+                    }
+                ]
             }
         ],
         "next_map_action": {
@@ -95,23 +117,6 @@
                         "delay": 4.5
                     }
                 ]
-            },
-            {
-                "name": "河虾",
-                "path": [[20,20],[15,17],[7,17]],
-                "mode": "custom",
-                "actions": [
-                    {
-                        "mode": "button",
-                        "pos": "table_1",
-                        "skip": 1
-                    },
-                    {
-                        "mode": "button",
-                        "pos": "chat_2",
-                        "delay": 4.5
-                    }
-                ]
             }
         ],
         "next_map_action": {
@@ -124,25 +129,8 @@
         "name": "杭州",
         "actions": [
             {
-                "name": "河虾",
-                "path": [[31,13],[32,6],[31,3]],
-                "mode": "custom",
-                "actions": [
-                    {
-                        "mode": "button",
-                        "pos": "table_1",
-                        "skip": 1
-                    },
-                    {
-                        "mode": "button",
-                        "pos": "chat_2",
-                        "delay": 4.5
-                    }
-                ]
-            },
-            {
                 "name": "赏荷",
-                "path": [[31,3],[32,10],[32,15],[25,15],[25,25],[15,25],[10,22],[10,18]],
+                "path": [[31,13],[32,10],[32,15],[25,15],[25,25],[15,25],[10,22],[10,18]],
                 "mode": "custom",
                 "actions": [
                     {
@@ -195,37 +183,8 @@
             }
         ],
         "next_map_action": {
-            "next_name": "龙泉镇",
-            "next_icon_pos": [981,703],
-            "next_btn_pos": [731,954]
-        }
-    },
-    {
-        "name": "龙泉镇",
-        "actions": [
-            {
-                "name": "河虾",
-                "path": [[12,7],[12,12]],
-                "mode": "custom",
-                "actions": [
-                    {
-                        "mode": "button",
-                        "pos": "table_1",
-                        "skip": 1
-                    },
-                    {
-                        "mode": "button",
-                        "pos": "chat_2",
-                        "delay": 4.5
-                    }
-                ]
-            }
-        ],
-        "map_size": [27,24],
-        "next_map_action": {
             "next_name": "双王镇",
-            "next_icon_pos": [743,654],
-            "next_btn_pos": [500,897]
+            "next_icon_pos": [740,650]
         }
     },
     {

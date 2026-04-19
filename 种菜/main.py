@@ -43,7 +43,7 @@ def move_to(mumu: Mumu, pos):
     wait_pos_change(mumu, reverse=True)
 
 if __name__ == "__main__":
-    mumu = Mumu("D:/MuMu Player 12/shell/MuMuManager.exe")
+    mumu = Mumu("D:/MuMuPlayer/nx_device/12.0/shell/MuMuManager.exe")
     ocr = OCR(mumu)
 
     cur_pos = start_pos

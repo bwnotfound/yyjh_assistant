@@ -1,0 +1,80 @@
+[
+    {
+        "name": "十方集",
+        "actions": [
+            {
+                "name": "蛇",
+                "path": [[5,23],[5,22]],
+                "mode": "custom",
+                "actions": [
+                    {
+                        "mode": "button",
+                        "pos": "table_3",
+                        "delay": 0.75
+                    }
+                ]
+            },
+            {
+                "name": "蛇",
+                "path": [[5,22],[9,24]],
+                "mode": "custom",
+                "actions": [
+                    {
+                        "mode": "button",
+                        "pos": "table_3",
+                        "delay": 0.75
+                    }
+                ]
+            },
+            {
+                "name": "蛇",
+                "path": [[9,24],[8,28]],
+                "mode": "custom",
+                "actions": [
+                    {
+                        "mode": "button",
+                        "pos": "table_3",
+                        "delay": 0.75
+                    }
+                ]
+            },
+            {
+                "name": "蛇",
+                "path": [[8,28],[4,26]],
+                "mode": "custom",
+                "actions": [
+                    {
+                        "mode": "button",
+                        "pos": "table_3",
+                        "delay": 0.75
+                    }
+                ]
+            },
+            {
+                "name": "蛇",
+                "path": [[4,26],[2,23]],
+                "mode": "custom",
+                "actions": [
+                    {
+                        "mode": "button",
+                        "pos": "table_3",
+                        "delay": 0.75
+                    }
+                ]
+            },
+            {
+                "name": "复位",
+                "path": [[2,23],[5,23]],
+                "mode": "custom",
+                "actions": [
+                    {
+                        "mode": "button",
+                        "pos": "table_3",
+                        "delay": 0.75
+                    }
+                ]
+            }
+        ],
+        "map_size": [34,29]
+    }
+]

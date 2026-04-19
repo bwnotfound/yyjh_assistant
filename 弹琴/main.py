@@ -19,7 +19,7 @@ def get_book_pos(num):
     y = table_offset_pos[1] + 0.5 * block_size[1]
     return (x, y)
 
-mumu = Mumu("D:/MuMu Player 12/shell/MuMuManager.exe")
+mumu = Mumu("D:/MuMuPlayer/nx_device/12.0/shell/MuMuManager.exe")
 
 cur_num = 1
 count = 0

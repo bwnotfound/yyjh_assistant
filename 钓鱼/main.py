@@ -28,7 +28,7 @@ def enter_fising_screen(mumu: Mumu):
 
 
 if __name__ == "__main__":
-    mumu = Mumu("D:/MuMu Player 12")
+    mumu = Mumu("D:/MuMuPlayer/nx_device/12.0")
     while True:
         if not mumu.is_color_similar(
             mumu.capture_window(), screen_pos, screen_color, threshold=15
