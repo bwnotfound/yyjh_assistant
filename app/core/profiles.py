@@ -13,16 +13,30 @@ YAML 结构 (按可点击区域分辨率分组):
           小: {block_size: [0.0833, 0.0741], move_max_num: 8, vision_delta_limit: 8}
           中: {block_size: [0.1052, 0.0935], move_max_num: 10, vision_delta_limit: 8}
 
-        # 全局 UI 位置（归一化），用于跨地图传送 / 对话菜单等通用操作
+        # 全局 UI 位置（归一化）
         ui_positions:
           package_btn: [0.235, 0.924]
           ticket_btn:  [0.314, 0.793]
           blank_btn:   [0.894, 0.705]
-          chat_btn_pos_list:
-            - [0.594, 0.437]
-            - [0.594, 0.530]
-            ...
-          table_btn_pos_list: [...]
+          # 等距按钮组：录入第 1 个 + 第 2 个，运行时 first + (i-1)*(second-first)
+          chat_btn:
+            first:  [0.594, 0.437]
+            second: [0.594, 0.530]
+            count:  6
+          table_btn:
+            first:  [...]
+            second: [...]
+            count:  6
+          # 商品 2D 栅格：录入第 1 个 + 第 N 个（默认 N = cols*rows，对角点误差最小）
+          buy_item_grid:
+            cols: 2
+            rows: 4
+            first:  [0.45, 0.30]
+            second: [0.55, 0.55]
+            second_index: 8
+          buy_increase_btn: [...]
+          buy_confirm_btn: [...]
+          buy_exit_btn: [...]
 
         # 监视小地图坐标变动的 ROI (x0, y0, x1, y1) 归一化
         minimap_coord_roi: [0.8963, 0.3231, 0.9401, 0.3518]
@@ -73,20 +87,200 @@ class VisionSpec:
 
 
 @dataclass
+class LinearButtonGroup:
+    """
+    一组等距排列的按钮（如对话菜单选项、场景交互项）。
+
+    只录入第 1 个和第 2 个的归一化坐标，其余按等差推算：
+        pos(i_1based) = first + (i_1based - 1) * (second - first)
+    """
+
+    first: tuple[float, float]
+    second: tuple[float, float]
+    count: int = 6
+
+    def position(self, index_1based: int) -> tuple[float, float]:
+        if not (1 <= index_1based <= self.count):
+            raise ValueError(f"按钮索引 {index_1based} 超界（共 {self.count} 项）")
+        idx = index_1based - 1
+        dx = self.second[0] - self.first[0]
+        dy = self.second[1] - self.first[1]
+        return (self.first[0] + idx * dx, self.first[1] + idx * dy)
+
+    def to_dict(self) -> dict:
+        return {
+            "first": list(self.first),
+            "second": list(self.second),
+            "count": int(self.count),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LinearButtonGroup":
+        return cls(
+            first=tuple(d["first"]),
+            second=tuple(d["second"]),
+            count=int(d.get("count", 6)),
+        )
+
+
+@dataclass
+class BuyItemGrid:
+    """
+    商品 2D 栅格：行优先，第 i (1-based) 个商品在 (col=(i-1)%cols, row=(i-1)//cols)。
+
+    只录入第 1 个 + 第 second_index 个的屏幕坐标。运行时反解列/行间距：
+        col_step_x = (second.x - first.x) / second_col
+        row_step_y = (second.y - first.y) / second_row
+    其中 second_col = (second_index-1) % cols, second_row = (second_index-1) // cols。
+
+    second_index 的约束：与第 1 个**既不同行也不同列**（否则反解时会 0 除）。
+    默认用 cols*rows（最远对角点，误差最小）。
+
+    简化假设：列方向只影响 x，行方向只影响 y（游戏 UI 通常如此，无倾斜）。
+    """
+
+    cols: int = 2
+    rows: int = 4
+    first: tuple[float, float] = (0.0, 0.0)
+    second: tuple[float, float] = (0.0, 0.0)
+    second_index: int = 8
+
+    @property
+    def total(self) -> int:
+        return self.cols * self.rows
+
+    def position(self, index_1based: int) -> tuple[float, float]:
+        if not (1 <= index_1based <= self.total):
+            raise ValueError(
+                f"商品索引 {index_1based} 超界"
+                f"（共 {self.total} 项 = {self.cols} 列 × {self.rows} 行）"
+            )
+        if not (1 <= self.second_index <= self.total) or self.second_index == 1:
+            raise ValueError(
+                f"second_index={self.second_index} 非法（须 ∈ [2, {self.total}]）"
+            )
+        s_col = (self.second_index - 1) % self.cols
+        s_row = (self.second_index - 1) // self.cols
+        if s_col == 0:
+            raise ValueError(
+                f"second_index={self.second_index} 与第 1 个在同列，"
+                f"无法反解列间距；请选与第 1 个不同列的位置（推荐对角）"
+            )
+        if s_row == 0:
+            raise ValueError(
+                f"second_index={self.second_index} 与第 1 个在同行，"
+                f"无法反解行间距；请选与第 1 个不同行的位置（推荐对角）"
+            )
+
+        col_step_x = (self.second[0] - self.first[0]) / s_col
+        row_step_y = (self.second[1] - self.first[1]) / s_row
+
+        target_col = (index_1based - 1) % self.cols
+        target_row = (index_1based - 1) // self.cols
+        return (
+            self.first[0] + target_col * col_step_x,
+            self.first[1] + target_row * row_step_y,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "cols": int(self.cols),
+            "rows": int(self.rows),
+            "first": list(self.first),
+            "second": list(self.second),
+            "second_index": int(self.second_index),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "BuyItemGrid":
+        cols = int(d.get("cols", 2))
+        rows = int(d.get("rows", 4))
+        return cls(
+            cols=cols,
+            rows=rows,
+            first=tuple(d["first"]),
+            second=tuple(d["second"]),
+            second_index=int(d.get("second_index", cols * rows)),
+        )
+
+
+def _load_button_group(
+    d: dict, new_key: str, legacy_key: str
+) -> Optional[LinearButtonGroup]:
+    """优先读 new_key（新格式 dict）；只有 legacy_key 时按前两项推算并 log warning。"""
+    if new_key in d and d[new_key]:
+        return LinearButtonGroup.from_dict(d[new_key])
+    if legacy_key in d and d[legacy_key]:
+        legacy = d[legacy_key]
+        if isinstance(legacy, list) and len(legacy) >= 2:
+            log.warning(
+                "movement_profile: 检测到弃用字段 %r，已按前两项自动迁移为 %r 等距推算；"
+                "请在运动配置 GUI 中确认 first/second/count 并重新保存以清除该提示",
+                legacy_key,
+                new_key,
+            )
+            return LinearButtonGroup(
+                first=tuple(legacy[0]),
+                second=tuple(legacy[1]),
+                count=max(2, len(legacy)),
+            )
+        log.warning(
+            "movement_profile: 检测到弃用字段 %r 但内容不足以迁移（< 2 项），已忽略",
+            legacy_key,
+        )
+    return None
+
+
+def _load_buy_item_grid(d: dict) -> Optional[BuyItemGrid]:
+    """
+    优先读新字段 buy_item_grid（dict）。
+    旧字段组合 buy_item_start_pos + buy_item_span (+ buy_item_cols/rows) 满足时
+    自动迁移：first = start_pos，second = start_pos + ((cols-1)*col_span,
+    (rows-1)*row_span)，second_index = cols*rows。
+    """
+    if "buy_item_grid" in d and d["buy_item_grid"]:
+        return BuyItemGrid.from_dict(d["buy_item_grid"])
+
+    legacy_start = d.get("buy_item_start_pos")
+    legacy_span = d.get("buy_item_span")
+    if not legacy_start or not legacy_span:
+        return None
+
+    cols = int(d.get("buy_item_cols", 2))
+    rows = int(d.get("buy_item_rows", 4))
+    sx, sy = float(legacy_start[0]), float(legacy_start[1])
+    dx, dy = float(legacy_span[0]), float(legacy_span[1])
+    log.warning(
+        "movement_profile: 检测到弃用字段 buy_item_start_pos/buy_item_span，"
+        "已自动迁移为 buy_item_grid（second 取对角第 %d 项）；"
+        "请在运动配置 GUI 中确认并重新保存以清除该提示",
+        cols * rows,
+    )
+    return BuyItemGrid(
+        cols=cols,
+        rows=rows,
+        first=(sx, sy),
+        second=(sx + (cols - 1) * dx, sy + (rows - 1) * dy),
+        second_index=cols * rows,
+    )
+
+
+@dataclass
 class UIPositions:
     """全局 UI 位置，归一化 (x, y)"""
 
     package_btn: Optional[tuple[float, float]] = None
     ticket_btn: Optional[tuple[float, float]] = None
     blank_btn: Optional[tuple[float, float]] = None
-    chat_btn_pos_list: list[tuple[float, float]] = field(default_factory=list)
-    table_btn_pos_list: list[tuple[float, float]] = field(default_factory=list)
 
-    # buy 菜单相关
-    buy_item_start_pos: Optional[tuple[float, float]] = None
-    buy_item_span: Optional[tuple[float, float]] = None  # (col_span, row_span) 归一化
-    buy_item_cols: int = 2
-    buy_item_rows: int = 5
+    # 等距排列的按钮组
+    chat_btn_group: Optional[LinearButtonGroup] = None
+    table_btn_group: Optional[LinearButtonGroup] = None
+
+    # 商品 2D 栅格
+    buy_item_grid: Optional[BuyItemGrid] = None
+
+    # buy 菜单其他单点
     buy_increase_btn: Optional[tuple[float, float]] = None
     buy_confirm_btn: Optional[tuple[float, float]] = None
     buy_exit_btn: Optional[tuple[float, float]] = None
@@ -97,8 +291,6 @@ class UIPositions:
             "package_btn",
             "ticket_btn",
             "blank_btn",
-            "buy_item_start_pos",
-            "buy_item_span",
             "buy_increase_btn",
             "buy_confirm_btn",
             "buy_exit_btn",
@@ -106,12 +298,12 @@ class UIPositions:
             val = getattr(self, name)
             if val is not None:
                 d[name] = list(val)
-        if self.chat_btn_pos_list:
-            d["chat_btn_pos_list"] = [list(p) for p in self.chat_btn_pos_list]
-        if self.table_btn_pos_list:
-            d["table_btn_pos_list"] = [list(p) for p in self.table_btn_pos_list]
-        d["buy_item_cols"] = self.buy_item_cols
-        d["buy_item_rows"] = self.buy_item_rows
+        if self.chat_btn_group is not None:
+            d["chat_btn"] = self.chat_btn_group.to_dict()
+        if self.table_btn_group is not None:
+            d["table_btn"] = self.table_btn_group.to_dict()
+        if self.buy_item_grid is not None:
+            d["buy_item_grid"] = self.buy_item_grid.to_dict()
         return d
 
     @classmethod
@@ -123,51 +315,38 @@ class UIPositions:
             v = d.get(key)
             return tuple(v) if v else None
 
-        def _pair_list(key: str) -> list[tuple[float, float]]:
-            return [tuple(p) for p in (d.get(key) or [])]
-
         return cls(
             package_btn=_pair("package_btn"),
             ticket_btn=_pair("ticket_btn"),
             blank_btn=_pair("blank_btn"),
-            chat_btn_pos_list=_pair_list("chat_btn_pos_list"),
-            table_btn_pos_list=_pair_list("table_btn_pos_list"),
-            buy_item_start_pos=_pair("buy_item_start_pos"),
-            buy_item_span=_pair("buy_item_span"),
-            buy_item_cols=int(d.get("buy_item_cols", 2)),
-            buy_item_rows=int(d.get("buy_item_rows", 5)),
+            chat_btn_group=_load_button_group(d, "chat_btn", "chat_btn_pos_list"),
+            table_btn_group=_load_button_group(d, "table_btn", "table_btn_pos_list"),
+            buy_item_grid=_load_buy_item_grid(d),
             buy_increase_btn=_pair("buy_increase_btn"),
             buy_confirm_btn=_pair("buy_confirm_btn"),
             buy_exit_btn=_pair("buy_exit_btn"),
         )
 
     def chat_btn(self, index_1based: int) -> tuple[float, float]:
-        """ "chat_1" / "chat_2" ... 之类的解析"""
-        idx = index_1based - 1
-        if not (0 <= idx < len(self.chat_btn_pos_list)):
+        if self.chat_btn_group is None:
             raise ValueError(
-                f"chat_btn 索引超界: {index_1based}，共有 {len(self.chat_btn_pos_list)} 项"
+                "ui.chat_btn 未配置（运动配置里需录入第 1 个和第 2 个按钮位置）"
             )
-        return self.chat_btn_pos_list[idx]
+        return self.chat_btn_group.position(index_1based)
 
     def table_btn(self, index_1based: int) -> tuple[float, float]:
-        idx = index_1based - 1
-        if not (0 <= idx < len(self.table_btn_pos_list)):
+        if self.table_btn_group is None:
             raise ValueError(
-                f"table_btn 索引超界: {index_1based}，共有 {len(self.table_btn_pos_list)} 项"
+                "ui.table_btn 未配置（运动配置里需录入第 1 个和第 2 个按钮位置）"
             )
-        return self.table_btn_pos_list[idx]
+        return self.table_btn_group.position(index_1based)
 
     def buy_item_pos(self, index_1based: int) -> tuple[float, float]:
-        """商品栅格定位: index 从 1 开始，行优先"""
-        if self.buy_item_start_pos is None or self.buy_item_span is None:
-            raise ValueError("buy_item_start_pos / buy_item_span 未配置")
-        idx = index_1based - 1
-        row = idx // self.buy_item_cols
-        col = idx % self.buy_item_cols
-        sx, sy = self.buy_item_start_pos
-        dx, dy = self.buy_item_span
-        return (sx + col * dx, sy + row * dy)
+        if self.buy_item_grid is None:
+            raise ValueError(
+                "ui.buy_item_grid 未配置（运动配置里需录入商品第 1 个和第 N 个位置）"
+            )
+        return self.buy_item_grid.position(index_1based)
 
 
 @dataclass

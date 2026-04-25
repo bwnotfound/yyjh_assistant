@@ -6,8 +6,10 @@ Mover - 运动执行器
   2. 处理相机贴边时角色 sprite 位置的偏移
   3. 执行一段 path，含飞行标记
   4. 暴露 wait_pos_stable / wait_screen_stable
+  5. 若注入 CoordReader，每段移动后用 OCR 闭环校验是否到达 target，
+     未到达抛 MoveNotConverged
 
-和 `CoordSystem` (大地图) 是同构但规模不同的两套"相机贴边修正"，这里就是小地图
+和 `CoordSystem` (大地图) 是同构但规模不同的两套"相机贴边修正"，这里是小地图
 (地图场景) 版本。
 """
 
@@ -16,11 +18,17 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
 from typing import Callable, Optional
 
+import cv2
+import numpy as np
 from PIL import Image
 
 from utils import Mumu
+from app.core.ocr import CoordReader
 from app.core.profiles import MovementProfile, VisionSpec
 
 log = logging.getLogger(__name__)
@@ -31,6 +39,35 @@ FLY = (-1, -1)
 
 # 等待屏幕变化时裁剪的 ROI（归一化），用于去掉边框干扰
 _SCREEN_DIFF_CROP = (0.032, 0.080, 0.841, 0.902)
+
+
+# =============================================================================
+# 异常 & 状态
+# =============================================================================
+
+
+class MoveNotConverged(RuntimeError):
+    """单段移动未能在限定条件下确认到达 target。"""
+
+
+class WaitStatus(Enum):
+    OK = "ok"  # 已到达（OCR 模式确认 == target；SSIM 模式仅"画面稳定"）
+    NO_CHANGE = "no_change"  # 阶段1超时未检测到变化
+    NOT_STABLE = "not_stable"  # 阶段2超时未稳定
+    WRONG_DESTINATION = "wrong_destination"  # OCR 模式：稳定但坐标 != target
+
+
+@dataclass
+class WaitOutcome:
+    status: WaitStatus
+    final_coord: Optional[
+        tuple[int, int]
+    ]  # OCR 模式下最后一次稳定坐标；SSIM 模式恒为 None
+
+
+# =============================================================================
+# MapContext
+# =============================================================================
 
 
 @dataclass
@@ -44,6 +81,11 @@ class MapContext:
     minimap_coord_roi: Optional[tuple[float, float, float, float]] = None
 
 
+# =============================================================================
+# Mover
+# =============================================================================
+
+
 class Mover:
     """
     有状态的移动执行器：维护"当前格坐标"作为 move 的起点。
@@ -53,9 +95,11 @@ class Mover:
         self,
         mumu: Mumu,
         profile: MovementProfile,
+        coord_reader: Optional[CoordReader] = None,
     ) -> None:
         self.mumu = mumu
         self.profile = profile
+        self.coord_reader = coord_reader
         self._cur_pos: Optional[tuple[int, int]] = None
 
     # ========================================================================
@@ -66,7 +110,7 @@ class Mover:
     def current_pos(self) -> Optional[tuple[int, int]]:
         return self._cur_pos
 
-    def set_current_pos(self, pos: tuple[int, int]) -> None:
+    def set_current_pos(self, pos: Optional[tuple[int, int]]) -> None:
         self._cur_pos = pos
 
     # ========================================================================
@@ -220,6 +264,9 @@ class Mover:
         per_segment: 每个原子段执行前调用 per_segment(idx_1based, total)，
                      总段数按"飞行+着陆算一段"计算（A2 语义）。
                      None 时不触发；有 cancel 等需求由调用方在回调里抛异常中断。
+
+        每个 move 原子段结束后会调用 _wait_until_arrived；
+        若注入了 coord_reader，未确认到达 target 时抛 MoveNotConverged。
         """
         if not path:
             return
@@ -243,7 +290,6 @@ class Mover:
         while i < len(split):
             tgt = split[i]
             if tgt == FLY:
-                # 下一个点是着陆点
                 if i + 1 >= len(split):
                     raise ValueError("path 以飞行标记结尾但无着陆点")
                 atoms.append(("fly", split[i + 1]))
@@ -260,23 +306,453 @@ class Mover:
                 per_segment(idx, total)
 
             if kind == "fly":
-                # 一个原子飞行段 = 点击角色唤起传送 + 等待落地（不点击）
+                # 飞行段：点角色 → 等画面稳定（无法用 OCR 校验，飞行落地即坐标变）
                 char_pos = self._character_screen_pos(self._cur_pos, ctx)
                 self.mumu.click(char_pos, delay=fly_delay)
                 self._cur_pos = target
                 self._wait_screen_stable(ctx)
             else:
-                click_pos = self._tile_to_click_pos(self._cur_pos, target, ctx)
+                src = self._cur_pos
+                click_pos = self._tile_to_click_pos(src, target, ctx)
+                # click 参数 log: 出错时直接看是 tile_size 算小了还是 click_pos 偏了
+                bw, bh = ctx.vision.block_size
+                char_pos = self._character_screen_pos(src, ctx)
+                log.info(
+                    "click: src=%s → target=%s, delta=(%+d,%+d), "
+                    "vision=%s block_size=(%.4f, %.4f), "
+                    "char_screen=(%.4f, %.4f), click_screen=(%.4f, %.4f)",
+                    src,
+                    target,
+                    target[0] - src[0],
+                    target[1] - src[1],
+                    getattr(ctx.vision, "name", "?"),
+                    bw,
+                    bh,
+                    char_pos[0],
+                    char_pos[1],
+                    click_pos[0],
+                    click_pos[1],
+                )
                 img_before = self.mumu.capture_window()
                 self.mumu.click(click_pos, delay=step_delay)
-                self._wait_pos_stable(ctx, img_before=img_before, max_wait=3.0)
-                self._cur_pos = target
-                self._wait_screen_stable(
-                    ctx, threshold=0.1, max_wait=1.0, raw_diff=True
-                )
+
+                outcome = self._wait_until_arrived(ctx, target, img_before=img_before)
+
+                if outcome.status == WaitStatus.OK:
+                    # OCR 模式: 用真实坐标更新 cur_pos；SSIM 模式 final_coord 为 None，回退到 target
+                    self._cur_pos = outcome.final_coord or target
+                else:
+                    raise MoveNotConverged(
+                        f"段 {src} → {target} 未确认到达："
+                        f"status={outcome.status.value}, "
+                        f"final_coord={outcome.final_coord}"
+                    )
+                # 注：旧版本曾在这里调 _wait_screen_stable 等"菜单/采集动画落定"。
+                # 但游戏的真实语义是"OCR 坐标到达 = 走路动画结束"，无需额外等待。
+                # 如果某些 routine 后续步骤（button/click）确实需要等画面静止，
+                # 在 routine 里显式插 wait_screen_stable 步骤即可。
 
     # ========================================================================
-    # 等待原语
+    # 到达判定（OCR 优先，SSIM 兜底）
+    # ========================================================================
+
+    def _wait_until_arrived(
+        self,
+        ctx: MapContext,
+        target: tuple[int, int],
+        img_before: Optional[Image.Image] = None,
+        *,
+        phase1_max_wait: float = 3.0,
+        phase2_max_wait: float = 5.0,
+        fps: float = 10.0,
+        stable_frames: int = 8,
+    ) -> WaitOutcome:
+        """
+        判定从 self._cur_pos 走到 target 是否完成。
+
+        OCR 模式（注入了 coord_reader）:
+          阶段1: 等坐标变化（≠ self._cur_pos）
+          阶段2: 等坐标稳定（连续 stable_frames 帧相同）
+          稳定后比对 target；不等抛 WRONG_DESTINATION
+
+        SSIM 模式（无 coord_reader）:
+          原 _wait_pos_stable 思路，但两阶段独立 deadline + 阶段2要求连续稳定
+        """
+        if self.coord_reader is not None:
+            return self._wait_via_ocr(
+                target, phase1_max_wait, phase2_max_wait, fps, stable_frames
+            )
+        return self._wait_via_ssim(
+            ctx, img_before, phase1_max_wait, phase2_max_wait, fps, stable_frames
+        )
+
+    def _wait_via_ocr(
+        self,
+        target: tuple[int, int],
+        phase1_max_wait: float,
+        phase2_max_wait: float,
+        fps: float,
+        stable_frames: int,  # 保留参数兼容旧签名，新逻辑下不再使用
+    ) -> WaitOutcome:
+        """
+        到达判定语义（按游戏的真实行为）:
+          OCR 读到 coord == target 即视为到达，立即返回 OK。
+          中间格子的坐标只做 trace 展示，不参与判定（每格切换瞬间游戏内坐标
+          已对齐到该格中心）。
+
+        阶段划分仅用于错误归类:
+          phase1 = 还没看到 coord != start_pos（用来判定 click 是否生效）
+          phase2 = 已经看到坐标变化，但还没读到 target
+
+        终止状态:
+          OK                ─ 任意阶段读到 coord == target
+          NO_CHANGE         ─ phase1 超时仍未观察到坐标变化
+          WRONG_DESTINATION ─ phase2 超时仍未读到 target，final_coord = 最后一次 OCR 读到的坐标
+        """
+        assert self.coord_reader is not None
+        delay = 1.0 / fps
+        start_pos = self._cur_pos
+        t_start = time.perf_counter()
+
+        # 整段移动的 OCR trace：(phase, t_rel, raw_text, coord)
+        trace: list[tuple[str, float, str, Optional[tuple[int, int]]]] = []
+        # 关键帧 ROI（PIL.Image），异常退出时 dump 出来肉眼验证
+        keyframes: dict[str, Image.Image] = {}
+
+        # ---- 阶段 1: 等坐标变化（顺便检查 coord 是否已经 == target） ----
+        deadline = time.perf_counter() + phase1_max_wait
+        moved_started = False
+        ocr_calls = 0
+        ocr_success = 0
+        debug_dumped = False  # 本段移动只在第一次 OCR 失败时 dump 模板诊断一次
+        while time.perf_counter() < deadline:
+            time.sleep(delay)
+            ocr_calls += 1
+            coord, text, roi_pil = self.coord_reader.read_verbose()
+            trace.append(("phase1", time.perf_counter() - t_start, text, coord))
+            if coord is None:
+                if not debug_dumped:
+                    self._dump_ocr_debug(start_pos, target)
+                    debug_dumped = True
+                continue
+            ocr_success += 1
+            if "phase1_first_read" not in keyframes:
+                keyframes["phase1_first_read"] = roi_pil
+            # 直接到达（少见但要兜住：start_pos 错或 click 极快）
+            if coord == target:
+                keyframes["arrived"] = roi_pil
+                return WaitOutcome(WaitStatus.OK, coord)
+            if coord != start_pos:
+                moved_started = True
+                keyframes["phase1_first_change"] = roi_pil
+                break
+
+        if not moved_started:
+            log.warning(
+                "OCR 阶段1超时未变化: start=%s, target=%s, ocr=%d/%d 成功",
+                start_pos,
+                target,
+                ocr_success,
+                ocr_calls,
+            )
+            self._log_ocr_trace(trace, "no_change", start_pos, target)
+            self._dump_ocr_keyframes(keyframes, "no_change")
+            return WaitOutcome(WaitStatus.NO_CHANGE, None)
+
+        # ---- 阶段 2: 持续等待 coord == target ----
+        deadline = time.perf_counter() + phase2_max_wait
+        last_coord: Optional[tuple[int, int]] = None
+        last_roi: Optional[Image.Image] = keyframes.get("phase1_first_change")
+        while time.perf_counter() < deadline:
+            time.sleep(delay)
+            coord, text, roi_pil = self.coord_reader.read_verbose()
+            trace.append(("phase2", time.perf_counter() - t_start, text, coord))
+            if coord is None:
+                continue
+            last_coord = coord
+            last_roi = roi_pil
+            if coord == target:
+                keyframes["arrived"] = roi_pil
+                return WaitOutcome(WaitStatus.OK, coord)
+
+        # 阶段2 超时，没读到 target —— 这是真实的"角色没走到目标"
+        log.warning(
+            "OCR 阶段2超时未到达: target=%s, last_seen=%s",
+            target,
+            last_coord,
+        )
+        if last_roi is not None:
+            keyframes["phase2_last"] = last_roi
+        self._log_ocr_trace(trace, "wrong_destination", start_pos, target)
+        self._dump_ocr_keyframes(keyframes, "wrong_destination")
+        return WaitOutcome(WaitStatus.WRONG_DESTINATION, last_coord)
+
+    def _wait_via_ssim(
+        self,
+        ctx: MapContext,
+        img_before: Optional[Image.Image],
+        phase1_max_wait: float,
+        phase2_max_wait: float,
+        fps: float,
+        stable_frames: int,
+        threshold: float = 0.01,
+    ) -> WaitOutcome:
+        roi = ctx.minimap_coord_roi
+        if roi is None:
+            # 没标定 ROI 也没 OCR：完全无法判断，傻等一下当作成功
+            time.sleep(0.2)
+            return WaitOutcome(WaitStatus.OK, None)
+
+        def _crop(img: Image.Image) -> Image.Image:
+            return self.mumu.crop_img(img, roi[:2], roi[2:])
+
+        delay = 1.0 / fps
+        last = _crop(img_before) if img_before is not None else None
+
+        # ---- 阶段 1: 等画面变 ----
+        deadline = time.perf_counter() + phase1_max_wait
+        changed = False
+        while time.perf_counter() < deadline:
+            time.sleep(delay)
+            img = _crop(self.mumu.capture_window())
+            if last is None:
+                last = img
+                continue
+            d = self.mumu.diff_img(img, last)
+            last = img
+            if d is not None and d > threshold:
+                changed = True
+                break
+
+        if not changed:
+            return WaitOutcome(WaitStatus.NO_CHANGE, None)
+
+        # ---- 阶段 2: 连续 stable_frames 帧 diff < threshold ----
+        deadline = time.perf_counter() + phase2_max_wait
+        stable_count = 0
+        while time.perf_counter() < deadline:
+            time.sleep(delay)
+            img = _crop(self.mumu.capture_window())
+            d = self.mumu.diff_img(img, last)
+            last = img
+            if d is None:
+                continue
+            if d < threshold:
+                stable_count += 1
+                if stable_count >= stable_frames:
+                    return WaitOutcome(WaitStatus.OK, None)
+            else:
+                stable_count = 0
+
+        return WaitOutcome(WaitStatus.NOT_STABLE, None)
+
+    # ========================================================================
+    # OCR 调试 dump
+    # ========================================================================
+
+    def _dump_ocr_debug(
+        self,
+        start_pos: Optional[tuple[int, int]],
+        target: tuple[int, int],
+    ) -> None:
+        """
+        OCR 第一次 read 返回 None 时调用一次。
+        把 ROI 截图、二值化结果保存到 debug/ocr/，并在日志里输出每个字符模板的最高响应分数。
+        """
+        if self.coord_reader is None:
+            return
+        try:
+            info = self.coord_reader.diagnose()
+        except Exception as e:
+            log.warning("OCR diagnose 失败: %s: %s", type(e).__name__, e)
+            return
+
+        debug_dir = Path("debug/ocr")
+        try:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            log.warning("无法创建 debug 目录 %s: %s", debug_dir, e)
+            return
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        roi_path = debug_dir / f"{ts}_roi.png"
+        bin_path = debug_dir / f"{ts}_roi_bin.png"
+        try:
+            roi_pil = info.get("roi_pil")
+            if roi_pil is not None:
+                roi_pil.save(roi_path)
+            roi_bin = info.get("roi_bin")
+            if roi_bin is not None:
+                cv2.imwrite(str(bin_path), roi_bin)
+        except Exception as e:
+            log.warning("保存 OCR debug 图像失败: %s", e)
+
+        # 输出诊断 log
+        W, H = info.get("roi_size", (0, 0))
+        thresh = info.get("score_threshold", 0.0)
+        log.info(
+            "OCR debug @ start=%s target=%s | ROI %dx%d, threshold=%.2f",
+            start_pos,
+            target,
+            W,
+            H,
+            thresh,
+        )
+        log.info("  ROI 截图: %s", roi_path)
+        log.info("  二值化:   %s", bin_path)
+
+        # 模板响应排序（最高在前）
+        results = info.get("glyph_results", [])
+        results = [r for r in results if "max_score" in r]
+        results.sort(key=lambda r: r["max_score"], reverse=True)
+        top_n = min(13, len(results))
+        log.info("  模板最高响应（top %d，按 score 降序）:", top_n)
+        for r in results[:top_n]:
+            log.info(
+                "    %r: score=%.3f @ (%d,%d), tmpl_size=%sx%s",
+                r["char"],
+                r["max_score"],
+                r["max_loc"][0],
+                r["max_loc"][1],
+                r["template_size"][0],
+                r["template_size"][1],
+            )
+        # 跳过的模板（太大的）
+        skipped = [r for r in info.get("glyph_results", []) if "skipped" in r]
+        if skipped:
+            log.warning(
+                "  以下模板被跳过 (template_larger_than_roi): %s",
+                [(r["char"], r["template_size"]) for r in skipped],
+            )
+
+        # recognize 的实际输出（看 NMS 后的字符串到底是什么）
+        text = info.get("recognize_text")
+        log.info("  recognize() 返回: %r", text)
+
+        # 所有 >= threshold 的候选（NMS 之前），按 cx 排序，看假冒位置
+        above = info.get("above_threshold_candidates", [])
+        log.info(
+            "  >= threshold 的候选共 %d 个 (NMS 前，按 cx 升序):",
+            len(above),
+        )
+        for c in above:
+            log.info(
+                "    cx=%5.1f tl=(%2d,%2d) %r score=%.3f size=%sx%s",
+                c["cx"],
+                c["tl"][0],
+                c["tl"][1],
+                c["char"],
+                c["score"],
+                c["size"][0],
+                c["size"][1],
+            )
+
+    def _log_ocr_trace(
+        self,
+        trace: list[tuple[str, float, str, Optional[tuple[int, int]]]],
+        status: str,
+        start_pos: Optional[tuple[int, int]],
+        target: tuple[int, int],
+    ) -> None:
+        """把 _wait_via_ocr 的整段识别 trace 输出到日志。"""
+        if not trace:
+            return
+        log.info(
+            "=== OCR trace dump (status=%s, start=%s, target=%s, %d 帧) ===",
+            status,
+            start_pos,
+            target,
+            len(trace),
+        )
+        for phase, t, text, coord in trace:
+            log.info(
+                "  [%s] +%6.3fs text=%-22r coord=%s",
+                phase,
+                t,
+                text,
+                coord,
+            )
+
+    def _dump_ocr_keyframes(
+        self,
+        keyframes: dict,
+        tag: str,
+    ) -> None:
+        """把 trace 期间记下的关键帧 ROI 保存到 debug/ocr/，并对每帧跑一次诊断。"""
+        if not keyframes:
+            return
+        debug_dir = Path("debug/ocr")
+        try:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            log.warning("无法创建 debug 目录 %s: %s", debug_dir, e)
+            return
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        for name, roi in keyframes.items():
+            path = debug_dir / f"{ts}_{tag}_{name}.png"
+            try:
+                roi.save(path)
+            except Exception as e:
+                log.warning("保存关键帧失败 %s: %s", path, e)
+                continue
+            log.info("  关键帧 [%s]: %s", name, path)
+            self._diagnose_keyframe_roi(name, roi)
+
+    def _diagnose_keyframe_roi(self, name: str, roi: Image.Image) -> None:
+        """对单帧 ROI 跑 OCR 诊断，输出 above_threshold 候选 + recognize 结果。"""
+        if self.coord_reader is None:
+            return
+        try:
+            roi_rgb = np.array(roi.convert("RGB"))
+            ocr = self.coord_reader.ocr
+            text = ocr.recognize(roi_rgb)
+            info = ocr.diagnose(roi_rgb)
+            above = info.get("above_threshold_candidates", [])
+            log.info(
+                "    [%s] recognize=%r, >= threshold (%.2f) 候选 %d 个 (按 cx 升序):",
+                name,
+                text,
+                info.get("score_threshold", 0.0),
+                len(above),
+            )
+            for c in above:
+                log.info(
+                    "      cx=%5.1f tl=(%2d,%2d) %r score=%.3f tmpl=%sx%s",
+                    c["cx"],
+                    c["tl"][0],
+                    c["tl"][1],
+                    c["char"],
+                    c["score"],
+                    c["size"][0],
+                    c["size"][1],
+                )
+            # 同时输出每个字符模板的最高响应（无视 threshold）—— 看到接近 0.85 的"
+            # 边缘候选"能直接判断是否要降阈值
+            glyph_results = info.get("glyph_results", [])
+            glyph_results = sorted(
+                [g for g in glyph_results if "max_score" in g],
+                key=lambda g: g["max_score"],
+                reverse=True,
+            )
+            log.info(
+                "    [%s] 各模板最高响应 (无视 threshold，按 score 降序):",
+                name,
+            )
+            for g in glyph_results:
+                log.info(
+                    "      %r: max=%.3f @ (%d,%d), tmpl=%sx%s",
+                    g["char"],
+                    g["max_score"],
+                    g["max_loc"][0],
+                    g["max_loc"][1],
+                    g["template_size"][0],
+                    g["template_size"][1],
+                )
+        except Exception as e:
+            log.warning("    [%s] 诊断失败: %s: %s", name, type(e).__name__, e)
+
+    # ========================================================================
+    # 等待原语（旧公共接口；wait_pos_stable / wait_screen_stable 行为不变）
     # ========================================================================
 
     def _wait_pos_stable(
@@ -287,10 +763,10 @@ class Mover:
         max_wait: float = 3.0,
         fps: float = 10.0,
     ) -> None:
-        """监视小地图坐标数字是否"先变再稳" —— 先等它变，再等它稳。"""
+        """监视小地图坐标 ROI 的"先变再稳"。SSIM 实现，公共接口用。"""
         roi = ctx.minimap_coord_roi
         if roi is None:
-            time.sleep(0.2)  # 没配 ROI 就傻等
+            time.sleep(0.2)
             return
 
         def _crop(img: Image.Image) -> Image.Image:
@@ -359,7 +835,7 @@ class Mover:
                 return
             time.sleep(delay)
 
-    # 对外的 wait* 接口（routine 可直接调用）
+    # 对外的 wait* 接口（routine 可直接调用；行为同旧版）
     def wait_pos_stable(
         self,
         ctx: MapContext,

@@ -6,6 +6,8 @@ RoutineRunner - 把 Routine 的每个 Step 分派到具体执行。
   - 暂停 / 单步  (step_event)
   - 日志回调 (on_log)
   - 进度回调 (on_progress: step_idx, total, loop_idx, loop_total)
+  - 移动闭环：若 movement_profile 配了 minimap_coord_roi 且
+    config/templates/minimap_coord/ 下有字符模板，自动启用 OCR 校验
 
 执行方式: 同步运行于调用线程。GUI 的 runner_dialog 用 QThread 包装调度。
 """
@@ -13,14 +15,17 @@ RoutineRunner - 把 Routine 的每个 Step 分派到具体执行。
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 from utils import Mumu
 
 from app.core.mover import MapContext, Mover
+from app.core.ocr import CoordReader, TemplateOCR
 from app.core.profiles import MovementProfile
 from app.core.routine import (
     AnyStep,
@@ -44,11 +49,12 @@ from config.common.map_registry import (
 log = logging.getLogger(__name__)
 
 
+# OCR 字符模板目录
+DEFAULT_OCR_TEMPLATE_DIR = Path("config/templates/minimap_coord")
+
+
 class RoutineCancelled(Exception):
     """调用方设置 cancel_event 后从执行器抛出"""
-
-
-import queue
 
 
 @dataclass
@@ -127,6 +133,50 @@ def _maybe_wait_step(hooks: RunnerHooks) -> None:
 
 
 # =============================================================================
+# OCR 构造（启动时一次）
+# =============================================================================
+
+
+def _maybe_build_coord_reader(
+    mumu: Mumu,
+    mp: MovementProfile,
+    template_dir: Path = DEFAULT_OCR_TEMPLATE_DIR,
+) -> Optional[CoordReader]:
+    """
+    根据 movement_profile 和模板目录决定是否启用 OCR 闭环。
+    任一条件不满足都返回 None（降级到 SSIM 等待逻辑），并 log 原因。
+    """
+    if mp.minimap_coord_roi is None:
+        log.info(
+            "movement_profile (%s) 未配置 minimap_coord_roi，"
+            "OCR 闭环禁用，使用 SSIM 等待逻辑",
+            mp.key,
+        )
+        return None
+    if not template_dir.exists():
+        log.warning(
+            "OCR 模板目录不存在: %s，OCR 闭环禁用，使用 SSIM 等待逻辑",
+            template_dir,
+        )
+        return None
+    try:
+        ocr = TemplateOCR.from_dir(template_dir)
+    except Exception as e:
+        log.warning(
+            "OCR 模板加载失败 (%s: %s)，降级到 SSIM 等待逻辑",
+            type(e).__name__,
+            e,
+        )
+        return None
+    log.info(
+        "OCR 闭环启用: roi=%s, template_dir=%s",
+        mp.minimap_coord_roi,
+        template_dir,
+    )
+    return CoordReader(mumu=mumu, ocr=ocr, roi_norm=mp.minimap_coord_roi)
+
+
+# =============================================================================
 # RoutineRunner
 # =============================================================================
 
@@ -152,7 +202,9 @@ class RoutineRunner:
                 f"map_registry 里没有分辨率 {movement_profile.key} 的 profile"
             )
         self._coord = CoordSystem(self._map_profile, map_registry.constraints)
-        self._mover = Mover(mumu, movement_profile)
+
+        coord_reader = _maybe_build_coord_reader(mumu, movement_profile)
+        self._mover = Mover(mumu, movement_profile, coord_reader=coord_reader)
         self._current_map: Optional[str] = routine.starting_map
 
     # ========================================================================
@@ -367,9 +419,11 @@ class RoutineRunner:
 
     def _do_buy(self, step: BuyStep) -> None:
         ui = self.movement_profile.ui
+        if ui.buy_item_grid is None:
+            raise ValueError(
+                "ui.buy_item_grid 未配置（运动配置里需录入商品第 1 个和第 N 个位置）"
+            )
         for required in (
-            "buy_item_start_pos",
-            "buy_item_span",
             "buy_increase_btn",
             "buy_confirm_btn",
             "buy_exit_btn",

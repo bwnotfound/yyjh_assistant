@@ -2,7 +2,12 @@
 运动配置对话框 —— 编辑 movement_profile.yaml
 
 左列: 条目列表（各项 UI 位置 / ROI / character_pos / 各视野的 block_size）
-右列: 选中条目的编辑器（单点 / 矩形 / 数值）+ "从游戏里取" 按钮（唤起 PositionPicker）
+右列: 选中条目的编辑器：
+        POINT          单点 (x, y)
+        LINEAR_GROUP   等距按钮组（first/second/count）
+        BUY_GRID       2D 商品栅格（first/second/cols/rows/second_index）
+        RECT           矩形 (x0, y0, x1, y1)
+        VISION         VisionSpec（含"取屏幕点反算 block_size"功能）
 """
 
 from __future__ import annotations
@@ -34,9 +39,10 @@ from utils import Mumu
 
 from app.core.profiles import (
     DEFAULT_MOVEMENT_YAML_PATH,
+    BuyItemGrid,
+    LinearButtonGroup,
     MovementProfile,
     MovementRegistry,
-    UIPositions,
     VisionSpec,
 )
 from app.views.position_picker import PositionPickerDialog
@@ -46,16 +52,18 @@ log = logging.getLogger(__name__)
 
 class EntryKind(Enum):
     POINT = "point"  # 单点 (x, y)
-    POINT_LIST = "point_list"  # 点列表（chat / table / ...）
+    LINEAR_GROUP = "linear_group"  # 等距按钮组
+    BUY_GRID = "buy_grid"  # 2D 商品栅格
     RECT = "rect"  # 矩形 (x0, y0, x1, y1)
     VISION = "vision"  # VisionSpec
+    CALIBRATE = "calibrate"  # 角色中心点 + 视野 block_size 联动反算
 
 
 @dataclass
 class Entry:
     """左侧列表里的一项"""
 
-    key: str  # 存储键（如 "ui.package_btn"）
+    key: str  # 存储键
     label: str  # 显示名
     kind: EntryKind
     getter: Callable  # () -> value
@@ -72,7 +80,7 @@ class MovementProfileDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("运动配置")
-        self.resize(820, 560)
+        self.resize(840, 640)
 
         self._mumu = mumu
         self._yaml_path = yaml_path
@@ -125,28 +133,37 @@ class MovementProfileDialog(QDialog):
             ("package_btn", "背包按钮"),
             ("ticket_btn", "车票按钮"),
             ("blank_btn", "空白点（跳过对话）"),
-            ("buy_item_start_pos", "购买-商品首格中心"),
-            ("buy_item_span", "购买-商品列行间距 (col_span, row_span)"),
             ("buy_increase_btn", "购买-数量 +"),
             ("buy_confirm_btn", "购买-确认"),
             ("buy_exit_btn", "购买-退出"),
         ]:
             entries.append(_simple_pt(attr, label))
 
-        # 点列表
+        # 等距按钮组
         for attr, label in [
-            ("chat_btn_pos_list", "对话菜单项列表"),
-            ("table_btn_pos_list", "场景交互项列表"),
+            ("chat_btn_group", "对话菜单按钮（等距）"),
+            ("table_btn_group", "场景交互按钮（等距）"),
         ]:
             entries.append(
                 Entry(
                     key=f"ui.{attr}",
                     label=label,
-                    kind=EntryKind.POINT_LIST,
+                    kind=EntryKind.LINEAR_GROUP,
                     getter=lambda a=attr: getattr(ui, a),
-                    setter=lambda v, a=attr: setattr(ui, a, list(v)),
+                    setter=lambda v, a=attr: setattr(ui, a, v),
                 )
             )
+
+        # 商品栅格
+        entries.append(
+            Entry(
+                key="ui.buy_item_grid",
+                label="购买-商品栅格（2D）",
+                kind=EntryKind.BUY_GRID,
+                getter=lambda: ui.buy_item_grid,
+                setter=lambda v: setattr(ui, "buy_item_grid", v),
+            )
+        )
 
         # 矩形 ROI
         entries.append(
@@ -171,6 +188,17 @@ class MovementProfileDialog(QDialog):
                     sub_vision=vname,
                 )
             )
+
+        # 角色中心点 + 视野联动反算（独立工具入口；不存独立字段）
+        entries.append(
+            Entry(
+                key="calibrate.character_and_vision",
+                label="角色中心点 + 视野（联动反算）",
+                kind=EntryKind.CALIBRATE,
+                getter=lambda: None,
+                setter=lambda v: None,
+            )
+        )
 
         return entries
 
@@ -239,7 +267,11 @@ class MovementProfileDialog(QDialog):
         self._list.blockSignals(True)
         self._list.clear()
         for i, e in enumerate(self._entries):
-            mark = "✓" if self._entry_is_set(e) else "✗"
+            if e.kind == EntryKind.CALIBRATE:
+                # 工具入口，不存独立字段，不显示 ✓/✗
+                mark = "🛠"
+            else:
+                mark = "✓" if self._entry_is_set(e) else "✗"
             it = QListWidgetItem(f"{mark} {e.label}")
             it.setData(Qt.UserRole, i)
             self._list.addItem(it)
@@ -253,8 +285,6 @@ class MovementProfileDialog(QDialog):
         v = e.getter()
         if v is None:
             return False
-        if e.kind == EntryKind.POINT_LIST:
-            return bool(v)
         return True
 
     def _on_sel_changed(self, cur: QListWidgetItem, _prev) -> None:
@@ -283,12 +313,16 @@ class MovementProfileDialog(QDialog):
     def _build_editor(self, entry: Entry) -> QWidget:
         if entry.kind == EntryKind.POINT:
             return self._editor_point(entry)
-        if entry.kind == EntryKind.POINT_LIST:
-            return self._editor_point_list(entry)
+        if entry.kind == EntryKind.LINEAR_GROUP:
+            return self._editor_linear_group(entry)
+        if entry.kind == EntryKind.BUY_GRID:
+            return self._editor_buy_grid(entry)
         if entry.kind == EntryKind.RECT:
             return self._editor_rect(entry)
         if entry.kind == EntryKind.VISION:
             return self._editor_vision(entry)
+        if entry.kind == EntryKind.CALIBRATE:
+            return self._editor_calibrate(entry)
         raise ValueError(f"未知 kind: {entry.kind}")
 
     def _mk_norm_spin(self, v: float) -> QDoubleSpinBox:
@@ -340,57 +374,253 @@ class MovementProfileDialog(QDialog):
         form.addRow("", _wrap(row))
         return w
 
-    def _editor_point_list(self, entry: Entry) -> QWidget:
+    def _editor_linear_group(self, entry: Entry) -> QWidget:
+        """等距按钮组：录第 1 个 + 第 2 个，运行时按等差推算第 i 个"""
         w = QWidget()
         form = QFormLayout(w)
-        pts = entry.getter() or []
+        grp: Optional[LinearButtonGroup] = entry.getter()
 
         form.addRow(f"<b>{entry.label}</b>", QLabel(""))
+        hint = QLabel(
+            "等距推算：录入第 1 个和第 2 个按钮位置，"
+            "运行时按 first + (i-1) × (second - first) 算第 i 个。"
+        )
+        hint.setStyleSheet("color: #888;")
+        hint.setWordWrap(True)
+        form.addRow("", hint)
 
-        # 简单展示文本
-        txt = QLabel(self._format_point_list(pts))
-        txt.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        form.addRow("已配置", txt)
+        # 第 1 个
+        fx = self._mk_norm_spin(grp.first[0] if grp else 0.0)
+        fy = self._mk_norm_spin(grp.first[1] if grp else 0.0)
+        first_row = QHBoxLayout()
+        first_row.addWidget(QLabel("x"))
+        first_row.addWidget(fx)
+        first_row.addWidget(QLabel("y"))
+        first_row.addWidget(fy)
+        btn_pick_first = QPushButton("取位置")
 
-        n_spin = QSpinBox()
-        n_spin.setRange(1, 20)
-        n_spin.setValue(max(1, len(pts) or 5))
-        form.addRow("录入点数", n_spin)
+        def _pick_first():
+            records = self._pick_points(1, [f"{entry.label} 第 1 个"])
+            if records:
+                fx.setValue(records[0].nx)
+                fy.setValue(records[0].ny)
 
-        def _pick_all():
-            n = n_spin.value()
-            labels = [f"{entry.label} #{i+1}" for i in range(n)]
-            records = self._pick_points(n, labels)
-            if records is None:
-                return
-            new_pts = [(r.nx, r.ny) for r in records]
-            entry.setter(new_pts)
+        btn_pick_first.clicked.connect(_pick_first)
+        first_row.addWidget(btn_pick_first)
+        first_row.addStretch(1)
+        form.addRow("第 1 个", _wrap(first_row))
+
+        # 第 2 个
+        sx = self._mk_norm_spin(grp.second[0] if grp else 0.0)
+        sy = self._mk_norm_spin(grp.second[1] if grp else 0.0)
+        second_row = QHBoxLayout()
+        second_row.addWidget(QLabel("x"))
+        second_row.addWidget(sx)
+        second_row.addWidget(QLabel("y"))
+        second_row.addWidget(sy)
+        btn_pick_second = QPushButton("取位置")
+
+        def _pick_second():
+            records = self._pick_points(1, [f"{entry.label} 第 2 个"])
+            if records:
+                sx.setValue(records[0].nx)
+                sy.setValue(records[0].ny)
+
+        btn_pick_second.clicked.connect(_pick_second)
+        second_row.addWidget(btn_pick_second)
+        second_row.addStretch(1)
+        form.addRow("第 2 个", _wrap(second_row))
+
+        # count
+        count_spin = QSpinBox()
+        count_spin.setRange(2, 20)
+        count_spin.setValue(grp.count if grp else 6)
+        form.addRow("count（按钮总数）", count_spin)
+
+        # 操作
+        row = QHBoxLayout()
+        btn_pick_both = QPushButton("一次取两个")
+
+        def _pick_both():
+            records = self._pick_points(
+                2,
+                [f"{entry.label} 第 1 个", f"{entry.label} 第 2 个"],
+            )
+            if records:
+                fx.setValue(records[0].nx)
+                fy.setValue(records[0].ny)
+                sx.setValue(records[1].nx)
+                sy.setValue(records[1].ny)
+
+        btn_pick_both.clicked.connect(_pick_both)
+        row.addWidget(btn_pick_both)
+
+        btn_apply = QPushButton("应用")
+
+        def _apply():
+            entry.setter(
+                LinearButtonGroup(
+                    first=(fx.value(), fy.value()),
+                    second=(sx.value(), sy.value()),
+                    count=count_spin.value(),
+                )
+            )
             self._reload_list()
-            self._on_sel_changed(self._list.currentItem(), None)
 
-        btn_pick = QPushButton("重录整个列表")
-        btn_pick.clicked.connect(_pick_all)
-        form.addRow("", btn_pick)
+        btn_apply.clicked.connect(_apply)
+        row.addWidget(btn_apply)
 
-        btn_clear = QPushButton("清空列表")
+        btn_clear = QPushButton("清空")
 
         def _clear():
-            entry.setter([])
+            entry.setter(None)
             self._reload_list()
             self._on_sel_changed(self._list.currentItem(), None)
 
         btn_clear.clicked.connect(_clear)
-        form.addRow("", btn_clear)
+        row.addWidget(btn_clear)
+        row.addStretch(1)
+        form.addRow("", _wrap(row))
 
         return w
 
-    @staticmethod
-    def _format_point_list(pts: list[tuple[float, float]]) -> str:
-        if not pts:
-            return "（空）"
-        return "\n".join(
-            f"  #{i+1}: ({x:.4f}, {y:.4f})" for i, (x, y) in enumerate(pts)
+    def _editor_buy_grid(self, entry: Entry) -> QWidget:
+        """商品 2D 栅格：录第 1 个 + 第 second_index 个，反解列/行间距"""
+        w = QWidget()
+        form = QFormLayout(w)
+        grid: Optional[BuyItemGrid] = entry.getter()
+
+        form.addRow(f"<b>{entry.label}</b>", QLabel(""))
+        hint = QLabel(
+            "录入第 1 个商品和第 N 个商品（默认 N = cols × rows，对角误差最小）。"
+            "约束：第 N 个必须与第 1 个既不同行也不同列；"
+            "运行时假设列方向只影响 x、行方向只影响 y。"
         )
+        hint.setStyleSheet("color: #888;")
+        hint.setWordWrap(True)
+        form.addRow("", hint)
+
+        cols_spin = QSpinBox()
+        cols_spin.setRange(1, 20)
+        cols_spin.setValue(grid.cols if grid else 2)
+        form.addRow("cols（列数）", cols_spin)
+
+        rows_spin = QSpinBox()
+        rows_spin.setRange(1, 20)
+        rows_spin.setValue(grid.rows if grid else 4)
+        form.addRow("rows（行数）", rows_spin)
+
+        # 第 1 个
+        fx = self._mk_norm_spin(grid.first[0] if grid else 0.0)
+        fy = self._mk_norm_spin(grid.first[1] if grid else 0.0)
+        first_row = QHBoxLayout()
+        first_row.addWidget(QLabel("x"))
+        first_row.addWidget(fx)
+        first_row.addWidget(QLabel("y"))
+        first_row.addWidget(fy)
+        btn_pick_first = QPushButton("取位置")
+
+        def _pick_first():
+            records = self._pick_points(1, [f"{entry.label} 第 1 个商品"])
+            if records:
+                fx.setValue(records[0].nx)
+                fy.setValue(records[0].ny)
+
+        btn_pick_first.clicked.connect(_pick_first)
+        first_row.addWidget(btn_pick_first)
+        first_row.addStretch(1)
+        form.addRow("第 1 个商品", _wrap(first_row))
+
+        # second_index（对角默认）
+        si_spin = QSpinBox()
+        si_spin.setRange(2, 400)
+        # 默认放最大值（对角点）
+        default_si = (
+            grid.second_index if grid else cols_spin.value() * rows_spin.value()
+        )
+        si_spin.setValue(default_si)
+
+        def _refresh_si_max():
+            new_max = max(2, cols_spin.value() * rows_spin.value())
+            si_spin.setMaximum(new_max)
+            # 如果当前值落在合法范围外，拉回上限
+            if si_spin.value() > new_max:
+                si_spin.setValue(new_max)
+
+        cols_spin.valueChanged.connect(_refresh_si_max)
+        rows_spin.valueChanged.connect(_refresh_si_max)
+        _refresh_si_max()
+        form.addRow("second_index（第 N 个，1-based）", si_spin)
+
+        # 第 N 个（second）
+        sx_spin = self._mk_norm_spin(grid.second[0] if grid else 0.0)
+        sy_spin = self._mk_norm_spin(grid.second[1] if grid else 0.0)
+        second_row = QHBoxLayout()
+        second_row.addWidget(QLabel("x"))
+        second_row.addWidget(sx_spin)
+        second_row.addWidget(QLabel("y"))
+        second_row.addWidget(sy_spin)
+        btn_pick_second = QPushButton("取位置")
+
+        def _pick_second():
+            records = self._pick_points(
+                1, [f"{entry.label} 第 {si_spin.value()} 个商品"]
+            )
+            if records:
+                sx_spin.setValue(records[0].nx)
+                sy_spin.setValue(records[0].ny)
+
+        btn_pick_second.clicked.connect(_pick_second)
+        second_row.addWidget(btn_pick_second)
+        second_row.addStretch(1)
+        form.addRow("第 N 个商品", _wrap(second_row))
+
+        # 操作
+        op_row = QHBoxLayout()
+        btn_apply = QPushButton("应用")
+
+        def _apply():
+            cols = cols_spin.value()
+            rows = rows_spin.value()
+            si = si_spin.value()
+            # 校验 second_index 不与第 1 个同行/同列
+            s_col = (si - 1) % cols
+            s_row = (si - 1) // cols
+            if s_col == 0 or s_row == 0 or si == 1:
+                QMessageBox.warning(
+                    self,
+                    "second_index 不合法",
+                    f"第 {si} 个与第 1 个在同行或同列，无法反解列/行间距。\n"
+                    f"请选与第 1 个对角的位置（推荐 N = cols × rows = {cols * rows}）。",
+                )
+                return
+            entry.setter(
+                BuyItemGrid(
+                    cols=cols,
+                    rows=rows,
+                    first=(fx.value(), fy.value()),
+                    second=(sx_spin.value(), sy_spin.value()),
+                    second_index=si,
+                )
+            )
+            self._reload_list()
+
+        btn_apply.clicked.connect(_apply)
+        op_row.addWidget(btn_apply)
+
+        btn_clear = QPushButton("清空")
+
+        def _clear():
+            entry.setter(None)
+            self._reload_list()
+            self._on_sel_changed(self._list.currentItem(), None)
+
+        btn_clear.clicked.connect(_clear)
+        op_row.addWidget(btn_clear)
+        op_row.addStretch(1)
+        form.addRow("", _wrap(op_row))
+
+        return w
 
     def _editor_rect(self, entry: Entry) -> QWidget:
         w = QWidget()
@@ -442,6 +672,15 @@ class MovementProfileDialog(QDialog):
         return w
 
     def _editor_vision(self, entry: Entry) -> QWidget:
+        """
+        VisionSpec 编辑器。
+        在原有 block_size / move_max_num / vision_delta_limit 基础上，加一段
+        "取屏幕点反算 block_size"：
+            等距投影 screen_dx = (dx-dy)*bw/2, screen_dy = (dx+dy)*bh/2，反解
+            bw = 2*(tx-cx)/(dx-dy), bh = 2*(ty-cy)/(dx+dy)
+            约束：dx != dy 且 dx != -dy（否则其中一个无法独立解出）
+            距离越远（|dx|+|dy| 越大）误差越小，默认 (8, 0) 纯东 8 格。
+        """
         w = QWidget()
         form = QFormLayout(w)
         spec: Optional[VisionSpec] = entry.getter()
@@ -450,8 +689,8 @@ class MovementProfileDialog(QDialog):
 
         bw = self._mk_norm_spin(spec.block_size[0] if spec else 0.08)
         bh = self._mk_norm_spin(spec.block_size[1] if spec else 0.08)
-        form.addRow("block_size.x", bw)
-        form.addRow("block_size.y", bh)
+        form.addRow("block_size.x (bw)", bw)
+        form.addRow("block_size.y (bh)", bh)
 
         mm = QSpinBox()
         mm.setRange(1, 100)
@@ -463,6 +702,74 @@ class MovementProfileDialog(QDialog):
         vdl.setValue(spec.vision_delta_limit if spec else 8)
         form.addRow("vision_delta_limit", vdl)
 
+        # ---- 反算 block_size ----
+        inv_hint = QLabel(
+            "反算：在游戏里站定后，目测一个 (dx, dy) 格远的位置点击，"
+            "自动反算 bw/bh 写入上方。约束 dx ≠ dy 且 dx ≠ -dy；"
+            "距离越远误差越小（默认 (8, 0) 纯东方向 8 格）。"
+        )
+        inv_hint.setStyleSheet("color: #888;")
+        inv_hint.setWordWrap(True)
+        form.addRow("", inv_hint)
+
+        dx_spin = QSpinBox()
+        dx_spin.setRange(-50, 50)
+        dx_spin.setValue(8)
+        dy_spin = QSpinBox()
+        dy_spin.setRange(-50, 50)
+        dy_spin.setValue(0)
+        inv_row = QHBoxLayout()
+        inv_row.addWidget(QLabel("dx"))
+        inv_row.addWidget(dx_spin)
+        inv_row.addWidget(QLabel("dy"))
+        inv_row.addWidget(dy_spin)
+
+        btn_inv = QPushButton("取屏幕点反算")
+
+        def _do_inverse():
+            dx = dx_spin.value()
+            dy = dy_spin.value()
+            if dx == dy or dx == -dy:
+                QMessageBox.warning(
+                    self,
+                    "约束未满足",
+                    f"当前 dx={dx}, dy={dy}：dx == dy 或 dx == -dy 时\n"
+                    f"bw 或 bh 无法独立解出。请改用其他方向（推荐 (8, 0) 或 (0, 8)）。",
+                )
+                return
+            cx, cy = self._profile.character_pos
+            records = self._pick_points(
+                1,
+                [f"{entry.label} 反算：" f"距角色 (dx={dx}, dy={dy}) 格远的格子中心"],
+            )
+            if not records:
+                return
+            tx, ty = records[0].nx, records[0].ny
+            new_bw = 2 * (tx - cx) / (dx - dy)
+            new_bh = 2 * (ty - cy) / (dx + dy)
+            # 直接写入 spinbox（让用户 review）。
+            # spinbox 范围 0~1 会自动 clamp，异常时弹警告告知
+            bw.setValue(new_bw)
+            bh.setValue(new_bh)
+            if not (0 < new_bw < 1) or not (0 < new_bh < 1):
+                QMessageBox.warning(
+                    self,
+                    "反算结果异常",
+                    f"反算得到 bw={new_bw:.4f}, bh={new_bh:.4f}（已 clamp 到 0~1）。\n"
+                    f"检查：character_pos=({cx:.4f}, {cy:.4f})，"
+                    f"取的点=({tx:.4f}, {ty:.4f})，dx={dx}, dy={dy}。\n"
+                    f"等距投影里 +x 是右下方向，+y 是左下方向。",
+                )
+
+        btn_inv.clicked.connect(_do_inverse)
+        inv_row.addWidget(btn_inv)
+        inv_row.addStretch(1)
+        form.addRow("反算 block_size", _wrap(inv_row))
+
+        # ---- 操作 ----
+        row = QHBoxLayout()
+        btn_apply = QPushButton("应用")
+
         def _apply():
             entry.setter(
                 VisionSpec(
@@ -473,8 +780,6 @@ class MovementProfileDialog(QDialog):
             )
             self._reload_list()
 
-        row = QHBoxLayout()
-        btn_apply = QPushButton("应用")
         btn_apply.clicked.connect(_apply)
         row.addWidget(btn_apply)
         btn_clear = QPushButton("清空（删除该档位）")
@@ -491,8 +796,156 @@ class MovementProfileDialog(QDialog):
         return w
 
     # ========================================================================
-    # 取位置
+    # 联动反算编辑器（角色中心点 + 视野 block_size 一起取）
     # ========================================================================
+
+    @staticmethod
+    def _fmt_pos(p: Optional[tuple[float, float]]) -> str:
+        if p is None:
+            return "—"
+        return f"({p[0]:.4f}, {p[1]:.4f})"
+
+    def _editor_calibrate(self, entry: Entry) -> QWidget:
+        """
+        联动反算工具：取两个屏幕点反算 character_pos 和某视野档位的 block_size。
+
+        点 1 = 角色脚下 → 直接作为 character_pos
+        点 2 = (dx, dy) 格远的目标格中心 → 配合 dx,dy 反算 block_size：
+            bw = 2*(tx-cx)/(dx-dy), bh = 2*(ty-cy)/(dx+dy)
+
+        约束 dx ≠ dy 且 dx ≠ -dy；距离越远误差越小，默认 (8, 0)。
+        反算成功直接写入 profile，无需点"应用"。
+        """
+        w = QWidget()
+        form = QFormLayout(w)
+
+        form.addRow(f"<b>{entry.label}</b>", QLabel(""))
+        hint = QLabel(
+            "在游戏里站定 → 输入 dx, dy → 取两个屏幕点：\n"
+            "  ① 角色脚下（写入 character_pos）\n"
+            "  ② 距角色 (dx, dy) 格远的格子中心（配合 dx,dy 反算 block_size）\n"
+            "约束：dx ≠ dy 且 dx ≠ -dy；距离越远误差越小（默认 dx=8, dy=0）。"
+        )
+        hint.setStyleSheet("color: #888;")
+        hint.setWordWrap(True)
+        form.addRow("", hint)
+
+        # 视野档位选择
+        vision_combo = QComboBox()
+        for vname in self._profile.vision_sizes.keys():
+            vision_combo.addItem(vname)
+        # 兜底：若一个档位都没有，给三个候选
+        if vision_combo.count() == 0:
+            for vname in ("小", "中", "大"):
+                vision_combo.addItem(vname)
+        form.addRow("视野档位", vision_combo)
+
+        # dxdy
+        dx_spin = QSpinBox()
+        dx_spin.setRange(-50, 50)
+        dx_spin.setValue(8)
+        dy_spin = QSpinBox()
+        dy_spin.setRange(-50, 50)
+        dy_spin.setValue(0)
+        dxdy_row = QHBoxLayout()
+        dxdy_row.addWidget(QLabel("dx"))
+        dxdy_row.addWidget(dx_spin)
+        dxdy_row.addWidget(QLabel("dy"))
+        dxdy_row.addWidget(dy_spin)
+        dxdy_row.addStretch(1)
+        form.addRow("第 2 个点相对角色的 (dx, dy)", _wrap(dxdy_row))
+
+        # 当前显示值
+        cp_label = QLabel(self._fmt_pos(self._profile.character_pos))
+        form.addRow("当前 character_pos", cp_label)
+
+        bs_label = QLabel("—")
+
+        def _refresh_bs_label():
+            vname = vision_combo.currentText()
+            spec = self._profile.vision_sizes.get(vname)
+            bs_label.setText(self._fmt_pos(spec.block_size) if spec else "（未配）")
+
+        _refresh_bs_label()
+        vision_combo.currentTextChanged.connect(lambda _: _refresh_bs_label())
+        form.addRow("当前 block_size", bs_label)
+
+        # 反算
+        btn = QPushButton("取两点 → 反算并应用")
+
+        def _do_calibrate():
+            dx = dx_spin.value()
+            dy = dy_spin.value()
+            if dx == dy or dx == -dy:
+                QMessageBox.warning(
+                    self,
+                    "约束未满足",
+                    f"当前 dx={dx}, dy={dy}：dx == dy 或 dx == -dy 时\n"
+                    f"bw 或 bh 无法独立解出。请改用其他方向（推荐 (8, 0) 或 (0, 8)）。",
+                )
+                return
+            vname = vision_combo.currentText()
+            if not vname:
+                QMessageBox.warning(self, "缺少视野档位", "请先设定一个视野档位")
+                return
+
+            records = self._pick_points(
+                2,
+                [
+                    "① 角色脚下（character_pos）",
+                    f"② 距角色 (dx={dx}, dy={dy}) 格远的格子中心",
+                ],
+            )
+            if not records or len(records) < 2:
+                return
+
+            cx, cy = records[0].nx, records[0].ny
+            tx, ty = records[1].nx, records[1].ny
+            bw_new = 2 * (tx - cx) / (dx - dy)
+            bh_new = 2 * (ty - cy) / (dx + dy)
+
+            # 直接落库（联动产出 4 个数横跨两个字段，再要求点"应用"反而绕）
+            self._profile.character_pos = (cx, cy)
+            existing = self._profile.vision_sizes.get(vname)
+            mm = existing.move_max_num if existing else 8
+            vdl = existing.vision_delta_limit if existing else 8
+            self._profile.vision_sizes[vname] = VisionSpec(
+                block_size=(bw_new, bh_new),
+                move_max_num=mm,
+                vision_delta_limit=vdl,
+            )
+
+            # 显示更新
+            cp_label.setText(self._fmt_pos(self._profile.character_pos))
+            _refresh_bs_label()
+            self._reload_list()
+
+            # 异常提醒（spinbox 0~1 范围在 vision 编辑器才会 clamp，这里直接落库无 clamp，
+            # 但仍提示用户：异常值多半是 dx/dy 符号或取点位置反了）
+            anomaly = not (0 < bw_new < 1) or not (0 < bh_new < 1)
+            if anomaly:
+                QMessageBox.warning(
+                    self,
+                    "反算结果异常",
+                    f"得到 bw={bw_new:.4f}, bh={bh_new:.4f}（已写入但值异常）。\n"
+                    f"检查：取的点 ① ({cx:.4f}, {cy:.4f})，"
+                    f"② ({tx:.4f}, {ty:.4f})，dx={dx}, dy={dy}。\n"
+                    f"等距投影里 +x 是右下方向，+y 是左下方向。\n"
+                    f"建议用「视野档位「{vname}」」编辑器手动修正，或重新执行反算。",
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "已应用",
+                    f"character_pos = ({cx:.4f}, {cy:.4f})\n"
+                    f"视野「{vname}」.block_size = ({bw_new:.4f}, {bh_new:.4f})\n"
+                    f"（仍需点底部「保存到 YAML」才落盘）",
+                )
+
+        btn.clicked.connect(_do_calibrate)
+        form.addRow("", btn)
+
+        return w
 
     def _pick_points(self, n: int, labels: list[str]):
         dlg = PositionPickerDialog(

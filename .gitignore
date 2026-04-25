@@ -2,3 +2,6 @@
 .vscode
 __pycache__
 dev/
+tools
+config/templates
+debug/

@@ -1,13 +1,35 @@
 profiles:
   1920x1080:
-    character_pos: [0.4417, 0.4944]
+    character_pos: [0.4350282485875706, 0.49096385542168675]
     vision_sizes:
       小:
-        block_size: [0.08333333333333333, 0.07407407407407407]
+        block_size: [0.09067796610169492, 0.07981927710843373]
         move_max_num: 8
         vision_delta_limit: 8
       中:
         block_size: [0.10520833333333333, 0.09351851851851851]
         move_max_num: 10
         vision_delta_limit: 8
-    ui_positions: {buy_item_cols: 2, buy_item_rows: 5}
+    ui_positions:
+      package_btn: [0.2056, 0.9548]
+      ticket_btn: [0.2887, 0.8143]
+      blank_btn: [0.8282, 0.9578]
+      buy_increase_btn: [0.8655, 0.5843]
+      buy_confirm_btn: [0.7797, 0.8193]
+      buy_exit_btn: [0.9571, 0.8795]
+      chat_btn:
+        first: [0.6056, 0.4327]
+        second: [0.6073, 0.5351]
+        count: 6
+      table_btn:
+        first: [0.9299, 0.4679]
+        second: [0.9311, 0.5442]
+        count: 6
+      buy_item_grid:
+        cols: 2
+        rows: 4
+        first: [0.2949, 0.2992]
+        second: [0.5407, 0.747]
+        second_index: 8
+    minimap_coord_roi: [0.9361581920903955, 0.3072289156626506, 0.9824858757062147,
+      0.33634538152610444]
