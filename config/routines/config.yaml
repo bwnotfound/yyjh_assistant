@@ -1,7 +1,8 @@
 name: config
-description: '迁移自旧 json，途经: 洛阳 → 嵩山 → 幽州 → 姑苏 → 杭州 → 泉州 → 双王镇 → 南阳渡 → 太乙山 → 凤鸣集 → 成都'
+description: '迁移自旧 json，途经: 洛阳 → 嵩山 → 幽州 → 姑苏 → 杭州 → 泉州 → 双王镇 → 南阳渡 → 太乙山 → 凤鸣集 →
+  成都'
 loop_count: 1
-loop_interval: 0
+loop_interval: 0.0
 starting_map: 洛阳
 steps:
 - type: move
@@ -12,12 +13,8 @@ steps:
   - [17, 21]
   - [18, 26]
   - [20, 30]
-- type: button
-  name: table_2
-  skip: 1
-- type: button
-  name: chat_1
-  delay: 4.5
+- {type: button, name: table_2, skip: 1}
+- {type: button, name: chat_1, delay: 4.5}
 - type: move
   at_map: 洛阳
   path:
@@ -34,17 +31,13 @@ steps:
   - [28, 22]
   - [28, 13]
   - [31, 12]
-- type: button
-  name: table_2
-- type: button
-  name: chat_1
-  delay: 1.0
+- {type: button, name: table_2}
+- {type: button, name: chat_1, delay: 1.0}
 - type: click
   pos: [1084, 837]
-  skip: 1
   delay: 1.0
-- type: travel
-  to: 嵩山
+  skip: 1
+- {type: travel, to: 嵩山}
 - type: move
   at_map: 嵩山
   path:
@@ -55,8 +48,7 @@ steps:
 - type: buy
   items:
   - [1, 1]
-- type: travel
-  to: 幽州
+- {type: travel, to: 幽州}
 - type: move
   at_map: 幽州
   path:
@@ -64,28 +56,18 @@ steps:
   - [17, 24]
   - [21, 28]
   - [25, 32]
-- type: button
-  name: table_2
-  skip: 1
-- type: button
-  name: chat_1
-  delay: 4.5
-- type: travel
-  to: 姑苏
+- {type: button, name: table_2, skip: 1}
+- {type: button, name: chat_1, delay: 4.5}
+- {type: travel, to: 姑苏}
 - type: move
   at_map: 姑苏
   path:
   - [17, 11]
   - [19, 17]
   - [20, 20]
-- type: button
-  name: table_2
-  skip: 1
-- type: button
-  name: chat_1
-  delay: 4.5
-- type: travel
-  to: 杭州
+- {type: button, name: table_2, skip: 1}
+- {type: button, name: chat_1, delay: 4.5}
+- {type: travel, to: 杭州}
 - type: move
   at_map: 杭州
   path:
@@ -97,24 +79,16 @@ steps:
   - [15, 25]
   - [10, 22]
   - [10, 18]
-- type: button
-  name: table_2
-  skip: 1
-- type: button
-  name: chat_1
-  skip: 2
-- type: travel
-  to: 泉州
+- {type: button, name: table_2, skip: 1}
+- {type: button, name: chat_1, skip: 2}
+- {type: travel, to: 泉州}
 - type: move
   at_map: 泉州
   path:
   - [16, 11]
   - [22, 10]
-- type: button
-  name: table_2
-- type: button
-  name: chat_2
-  delay: 1
+- {type: button, name: table_2}
+- {type: button, name: chat_2, delay: 1}
 - type: buy
   items:
   - [2, 1]
@@ -128,22 +102,16 @@ steps:
   items:
   - [7, 1]
   - [8, 1]
-- type: travel
-  to: 双王镇
+- {type: travel, to: 双王镇}
 - type: move
   at_map: 双王镇
   path:
   - [11, 23]
   - [17, 23]
   - [21, 23]
-- type: button
-  name: table_2
-  skip: 1
-- type: button
-  name: chat_1
-  delay: 4.5
-- type: travel
-  to: 南阳渡
+- {type: button, name: table_2, skip: 1}
+- {type: button, name: chat_1, delay: 4.5}
+- {type: travel, to: 南阳渡}
 - type: move
   at_map: 南阳渡
   path:
@@ -159,14 +127,9 @@ steps:
   - [25, 23]
   - [22, 21]
   - [19, 19]
-- type: button
-  name: table_2
-  skip: 1
-- type: button
-  name: chat_1
-  delay: 4.5
-- type: travel
-  to: 太乙山
+- {type: button, name: table_2, skip: 1}
+- {type: button, name: chat_1, delay: 4.5}
+- {type: travel, to: 太乙山}
 - type: move
   at_map: 太乙山
   path:
@@ -178,8 +141,7 @@ steps:
 - type: buy
   items:
   - [1, 1]
-- type: travel
-  to: 凤鸣集
+- {type: travel, to: 凤鸣集}
 - type: move
   at_map: 凤鸣集
   path:
@@ -195,14 +157,9 @@ steps:
   path:
   - [13, 25]
   - [15, 21]
-- type: button
-  name: table_2
-  skip: 1
-- type: button
-  name: chat_1
-  delay: 4.5
-- type: travel
-  to: 成都
+- {type: button, name: table_2, skip: 1}
+- {type: button, name: chat_1, delay: 4.5}
+- {type: travel, to: 成都}
 - type: move
   at_map: 成都
   path:

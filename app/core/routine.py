@@ -22,20 +22,8 @@ Routine 数据模型。
       - type: button
         name: table_2
         skip: 1
-      - type: button
-        name: chat_1
-        delay: 4.5
-      - type: click
-        pos: [0.565, 0.776]
-        delay: 1.0
-      - type: buy
-        items:
-          - [1, 5]
-          - [2, 3]
-      - type: sleep
-        seconds: 1.5
-      - type: wait_pos_stable
-      - type: wait_screen_stable
+      - type: include
+        routine: 子流程         # 引用 config/routines/子流程.yaml
 """
 
 from __future__ import annotations
@@ -43,7 +31,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Optional, Union
 
 import yaml
 
@@ -130,9 +118,20 @@ class ButtonStep(Step):
 
 @dataclass
 class ClickStep(Step):
-    """在归一化坐标处点击"""
+    """
+    在归一化坐标处点击。
+
+    两种模式:
+      - 自定义: preset = None, 用 pos = (x, y)
+      - 预设:   preset = "blank_btn" / "package_btn" / ... ,
+                运行时由 movement_profile 解析为坐标，pos 字段被忽略
+                (但仍持久化以方便阅读和切回自定义时兜底)
+
+    合法 preset 名见 CLICK_PRESETS。
+    """
 
     pos: tuple[float, float] = (0.0, 0.0)
+    preset: Optional[str] = None
     delay: float = 0.0
     skip: int = 0  # 点完后再点 skip 次 blank
 
@@ -141,11 +140,32 @@ class ClickStep(Step):
 
     def to_dict(self) -> dict:
         d = {**super().to_dict(), "pos": list(self.pos)}
+        if self.preset:
+            d["preset"] = self.preset
         if self.delay:
             d["delay"] = self.delay
         if self.skip:
             d["skip"] = self.skip
         return d
+
+
+# Click 步骤支持的预设位置清单 (preset_name, label)。
+# 预设名严格对应 movement_profile 里的字段名:
+#   - UIPositions 单点字段: package_btn / ticket_btn / blank_btn /
+#                           buy_increase_btn / buy_confirm_btn / buy_exit_btn
+#   - MovementProfile 顶层字段: character_pos
+# 等距按钮组 (chat / table) 和商品栅格 (buy_item_grid) 不在此列 ——
+# 它们已分别由 ButtonStep / BuyStep 覆盖，避免 UX 重复。
+CLICK_PRESETS: list[tuple[str, str]] = [
+    ("blank_btn", "空白处（跳对话）"),
+    ("package_btn", "背包按钮"),
+    ("ticket_btn", "车票按钮"),
+    ("buy_increase_btn", "购买-数量 +1"),
+    ("buy_confirm_btn", "购买-确认"),
+    ("buy_exit_btn", "购买-退出"),
+    ("character_pos", "角色身上"),
+]
+CLICK_PRESET_NAMES: set[str] = {name for name, _ in CLICK_PRESETS}
 
 
 @dataclass
@@ -230,6 +250,33 @@ class EnterMapStep(Step):
         return {**super().to_dict(), "map": self.map}
 
 
+@dataclass
+class IncludeStep(Step):
+    """
+    串联执行另一个 routine 文件。
+
+    `routine` 字段:
+      - 文件名 (不含扩展名)，runner 会在 config/routines/ 下找 <name>.yaml
+      - 也可写绝对路径或相对当前工作目录的路径
+
+    被 include 的子 routine:
+      * loop_count / loop_interval / starting_map 字段被忽略
+        (子 routine 在父级里只是一段 step 序列；要循环就在父级里多写几次 include)
+      * at_map / 当前位置上下文继承父级
+      * 防环: runner 维护 include 调用栈，递归引用直接抛错
+    """
+
+    routine: str = ""
+
+    def __post_init__(self) -> None:
+        self.TYPE = "include"
+        if not self.routine:
+            raise ValueError("include 步骤必须指定 routine")
+
+    def to_dict(self) -> dict:
+        return {**super().to_dict(), "routine": self.routine}
+
+
 AnyStep = Union[
     TravelStep,
     MoveStep,
@@ -240,6 +287,7 @@ AnyStep = Union[
     WaitPosStableStep,
     WaitScreenStableStep,
     EnterMapStep,
+    IncludeStep,
 ]
 
 
@@ -254,6 +302,7 @@ _STEP_REGISTRY: dict[str, type] = {
     "wait_pos_stable": WaitPosStableStep,
     "wait_screen_stable": WaitScreenStableStep,
     "enter_map": EnterMapStep,
+    "include": IncludeStep,
 }
 
 

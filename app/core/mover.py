@@ -29,7 +29,12 @@ from PIL import Image
 
 from utils import Mumu
 from app.core.ocr import CoordReader
-from app.core.profiles import MovementProfile, VisionSpec
+from app.core.profiles import (
+    ClickDelays,
+    MovementProfile,
+    VisionSpec,
+    compute_character_screen_pos,
+)
 
 log = logging.getLogger(__name__)
 
@@ -125,14 +130,50 @@ class Mover:
         """
         根据"移动前格坐标 + 地图尺寸 + 视野"算出角色 sprite 在屏幕上的位置。
 
-        相机尽量把角色放屏幕中心，但当角色靠近地图四个角时，相机会贴边，
-        导致角色 sprite 偏离屏幕中心。这里按四角的最小曼哈顿距离做修正。
-        若 ctx.map_size 为 None，视为"路径不会触碰边缘"，不做修正。
+        相机尽量把角色放屏幕中心, 当角色靠近地图顶点时, 相机贴边导致角色 sprite
+        偏离屏幕中心. 两种实现:
+
+          1) 几何算法 (优先): self.profile.map_view_area 已配置时, 调
+             compute_character_screen_pos. 处理 X/Y 双轴独立激活, 在小地图
+             两个角同时贴屏幕边的场景下也准 (例如 14x14 地图玩家在 (3, 14):
+             W 顶点贴 vx0 + S 顶点贴 vy1 → px py 同时偏移).
+
+          2) 老 vision_delta_limit 经验算法 (fallback): map_view_area 未配置
+             时使用. 只考虑离最近的**单一**顶点, 对双轴同时激活会算偏 (是这次
+             暴露的 bug 的根因, 现已被路径 1 接管).
+
+        若 ctx.map_size 为 None, 视为"路径不会触碰边缘", 直接返回 character_pos.
         """
         cx, cy = self.profile.character_pos
         if ctx.map_size is None:
             return (cx, cy)
 
+        # 路径 1: 几何算法 (优先, 与 click_preview / map_size_solver 用同一套)
+        view_area = self.profile.map_view_area
+        if view_area is not None:
+            return compute_character_screen_pos(
+                pre_pos=pre_pos,
+                map_size=ctx.map_size,
+                block_size=ctx.vision.block_size,
+                character_pos=self.profile.character_pos,
+                view_area=view_area,
+            )
+
+        # 路径 2: 老 vision_delta_limit 算法 (fallback)
+        # 仅在 map_view_area 未配置时使用. 与 click_preview_dialog 中
+        # _character_screen_pos_legacy 的实现保持一致, 修改时记得两边同步.
+        return self._character_screen_pos_legacy(pre_pos, ctx)
+
+    def _character_screen_pos_legacy(
+        self,
+        pre_pos: tuple[int, int],
+        ctx: MapContext,
+    ) -> tuple[float, float]:
+        """
+        老的 vision_delta_limit 经验算法. 只考虑离最近的单一顶点, 双轴组合
+        激活时会偏. 仅作为 map_view_area 未配置时的兜底.
+        """
+        cx, cy = self.profile.character_pos
         bw, bh = ctx.vision.block_size
         vdl = ctx.vision.vision_delta_limit
         mw, mh = ctx.map_size
@@ -163,8 +204,8 @@ class Mover:
         if min_idx is None:
             return (cx, cy)
 
-        # SE 角的 corner 用 (mw-1, mh-1) 但相机贴边时 bigmap 终点算 (mw, mh)；
-        # 这里按旧代码的经验值: SE 角额外 +2 offset，其他角按 vdl - delta
+        # SE 角的 corner 用 (mw-1, mh-1) 但相机贴边时 bigmap 终点算 (mw, mh);
+        # 这里按旧代码的经验值: SE 角额外 +2 offset, 其他角按 vdl - delta
         offset_unit = vdl - min_delta
         if min_idx == 3:  # SE
             real_delta = abs(pre_pos[0] - mw) + abs(pre_pos[1] - mh)
@@ -254,12 +295,22 @@ class Mover:
         self,
         path: list[tuple[int, int]],
         ctx: MapContext,
-        step_delay: float = 0.2,
-        fly_delay: float = 0.8,
+        step_delay: Optional[float] = None,
+        fly_delay: Optional[float] = None,
+        fly_settle_max_wait: Optional[float] = None,
         per_segment: Optional[Callable[[int, int], None]] = None,
     ) -> None:
         """
         执行一段路径。第一个点作为起点（必须与当前位置一致或由调用者负责）。
+
+        参数:
+          step_delay: 普通 move 原子段每次 click 后的 sleep 秒数。None 时从
+                     self.profile.click_delays 读取 (默认 0.0s, OCR 闭环下不需要
+                     人为 sleep——phase1 本身就在循环等坐标变化).
+          fly_delay: 飞行段点角色后等起跳的延迟（秒）。
+                     None 时从 self.profile.click_delays 读取（默认 0.8s）。
+          fly_settle_max_wait: 飞行段起跳后等画面稳定（落地）的最长等待秒数。
+                     None 时从 self.profile.click_delays 读取（默认 3.0s）。
 
         per_segment: 每个原子段执行前调用 per_segment(idx_1based, total)，
                      总段数按"飞行+着陆算一段"计算（A2 语义）。
@@ -270,6 +321,16 @@ class Mover:
         """
         if not path:
             return
+
+        # 参数解析：未显式传入则走 profile 配置
+        cd = self.profile.click_delays
+        if step_delay is None:
+            step_delay = cd.resolve("move_step")
+        if fly_delay is None:
+            fly_delay = cd.resolve("fly")
+        if fly_settle_max_wait is None:
+            fly_settle_max_wait = cd.resolve("fly_settle")
+
         # 认可 path[0] 为当前位置
         if self._cur_pos is None:
             self._cur_pos = path[0]
@@ -299,18 +360,97 @@ class Mover:
                 i += 1
 
         total = len(atoms)
-        log.info("path: %s → 切段 %d 原子步", path, total)
+        log.info(
+            "path: %s → 切段 %d 原子步, step_delay=%.2fs, fly_delay=%.2fs, fly_settle_max_wait=%.2fs",
+            path,
+            total,
+            step_delay,
+            fly_delay,
+            fly_settle_max_wait,
+        )
 
         for idx, (kind, target) in enumerate(atoms, start=1):
             if per_segment is not None:
                 per_segment(idx, total)
 
+            seg_start = time.perf_counter()
+            seg_src = self._cur_pos
+
             if kind == "fly":
-                # 飞行段：点角色 → 等画面稳定（无法用 OCR 校验，飞行落地即坐标变）
-                char_pos = self._character_screen_pos(self._cur_pos, ctx)
+                # 飞行段（烟雨江湖轻功施展）：两次点击 ——
+                #   ① 点角色:  进入施展模式, 屏幕弹"可施展格"黄色高亮
+                #   ② 点目标格: 角色飞过去 (黄框外点击会被判为"取消施展")
+                #
+                # 时序:
+                #   1) mumu.click(char_pos, delay=fly_delay)
+                #      点角色后 sleep fly_delay (默认 0.8s) 等黄框渲染出来。
+                #      这个值不能太短——若第二次 click 在黄框出现前就发出去, 游戏可能
+                #      把它判为"再次点角色 = 切换状态" 而不是"点目标格"。
+                #
+                #   2) mumu.click(target_click_pos)
+                #      点目标格在屏幕上的等距投影位置。投影公式与普通 move 完全一致
+                #      (_tile_to_click_pos), 区别只在于这里 from=src to=target 之间
+                #      跨距可能超过 vision.move_max_num —— 走路时 split_path 会把这种
+                #      段拆分, 但飞行段本就允许超出, split_path 对飞行段的处理也是直接
+                #      保留 (不会拆), 所以这里直接用 target 即可。
+                #
+                #   3) _wait_until_arrived (有 coord_reader 时) 或 _wait_screen_stable
+                #      落地判定。OCR 模式下读到 target 坐标立即返回, 不需要等满
+                #      fly_settle_max_wait; SSIM 模式靠画面稳定判定, 飞行动画结束就返回。
+                #
+                # 注意 self._cur_pos 的更新时机: 必须在调用 _wait_until_arrived 之前
+                # 把 _cur_pos 改成 src (而不是 target), 因为 _wait_via_ocr 用 self._cur_pos
+                # 作为 start_pos 判定"坐标变化"。这里 src 就是飞行前位置, 不需要额外赋值。
+                src = self._cur_pos
+                char_pos = self._character_screen_pos(src, ctx)
+                target_click_pos = self._tile_to_click_pos(src, target, ctx)
+                log.info(
+                    "fly: src=%s → target=%s, delta=(%+d,%+d), "
+                    "char_screen=(%.4f, %.4f), target_click=(%.4f, %.4f), "
+                    "fly_delay=%.2fs, fly_settle_max_wait=%.2fs",
+                    src,
+                    target,
+                    target[0] - src[0],
+                    target[1] - src[1],
+                    char_pos[0],
+                    char_pos[1],
+                    target_click_pos[0],
+                    target_click_pos[1],
+                    fly_delay,
+                    fly_settle_max_wait,
+                )
+                img_before = self.mumu.capture_window()
+                # ① 点角色, 进入施展模式
                 self.mumu.click(char_pos, delay=fly_delay)
-                self._cur_pos = target
-                self._wait_screen_stable(ctx)
+                # ② 点目标格, 触发飞行
+                #    用 step_delay (默认 0.2s) 给 adb 注入点击 + 游戏触发飞行动画
+                #    起步留个最小间隔; 真正等落地是后面的 _wait_until_arrived。
+                self.mumu.click(target_click_pos, delay=step_delay)
+
+                # 落地判定 (与普通 move 段同一套). 飞行的 phase1 (等坐标变) 用
+                # fly_settle_max_wait 而不是默认 3s ——飞行动画起步可能晚于普通走路,
+                # 短动画起步快, 长动画起步慢, 都要靠这个值兜住。phase2 (从已变到达 target)
+                # 用更短的默认值即可: 一旦坐标开始变化, 离落地通常很近。
+                outcome = self._wait_until_arrived(
+                    ctx,
+                    target,
+                    img_before=img_before,
+                    phase1_max_wait=fly_settle_max_wait,
+                    phase2_max_wait=fly_settle_max_wait,
+                )
+
+                if outcome.status == WaitStatus.OK:
+                    self._cur_pos = outcome.final_coord or target
+                else:
+                    raise MoveNotConverged(
+                        f"飞行段 {src} → {target} 未确认到达："
+                        f"status={outcome.status.value}, "
+                        f"final_coord={outcome.final_coord}. "
+                        f"常见原因: ① 当前地图禁用轻功 / 角色未学相应轻功 / 体力不足；"
+                        f"② 目标格在轻功可施展范围（黄框）之外；"
+                        f"③ 第一次点角色没生效（character_pos 偏了 / 角色被遮挡），"
+                        f"导致第二次点击落到非黄框区域被判为取消"
+                    )
             else:
                 src = self._cur_pos
                 click_pos = self._tile_to_click_pos(src, target, ctx)
@@ -336,7 +476,15 @@ class Mover:
                 img_before = self.mumu.capture_window()
                 self.mumu.click(click_pos, delay=step_delay)
 
-                outcome = self._wait_until_arrived(ctx, target, img_before=img_before)
+                # SSIM 模式下 expected_edges = chebyshev 距离: 烟雨江湖 8 方向移动,
+                # 走 N 个格子 = minimap 坐标刷新 N 次 = ROI 上 N 次"stable→change"上升沿
+                expected_edges = max(abs(target[0] - src[0]), abs(target[1] - src[1]))
+                outcome = self._wait_until_arrived(
+                    ctx,
+                    target,
+                    img_before=img_before,
+                    expected_edges=expected_edges,
+                )
 
                 if outcome.status == WaitStatus.OK:
                     # OCR 模式: 用真实坐标更新 cur_pos；SSIM 模式 final_coord 为 None，回退到 target
@@ -352,6 +500,16 @@ class Mover:
                 # 如果某些 routine 后续步骤（button/click）确实需要等画面静止，
                 # 在 routine 里显式插 wait_screen_stable 步骤即可。
 
+            log.debug(
+                "seg %d/%d done: kind=%s, %s→%s, 总耗时 %.3fs",
+                idx,
+                total,
+                kind,
+                seg_src,
+                target,
+                time.perf_counter() - seg_start,
+            )
+
     # ========================================================================
     # 到达判定（OCR 优先，SSIM 兜底）
     # ========================================================================
@@ -366,6 +524,7 @@ class Mover:
         phase2_max_wait: float = 5.0,
         fps: float = 10.0,
         stable_frames: int = 8,
+        expected_edges: Optional[int] = None,
     ) -> WaitOutcome:
         """
         判定从 self._cur_pos 走到 target 是否完成。
@@ -376,14 +535,27 @@ class Mover:
           稳定后比对 target；不等抛 WRONG_DESTINATION
 
         SSIM 模式（无 coord_reader）:
-          原 _wait_pos_stable 思路，但两阶段独立 deadline + 阶段2要求连续稳定
+          阶段1: 等 minimap_coord_roi 内画面发生变化（人物起步/坐标数字第一次刷新）
+          阶段2:
+            - 若给定 expected_edges (普通 move 段, 等于 chebyshev(src,target)):
+              按"上升沿计数"判定 —— 数到 expected_edges 次 stable→change 转换
+              立即返回 OK。原理: 烟雨江湖 minimap 坐标每过一格刷新一次, 走 N 格
+              触发 N 次上升沿。
+            - expected_edges=None (fly 段或不知道距离时):
+              fallback 到原"连续 stable_frames 帧 diff<threshold"判定。
         """
         if self.coord_reader is not None:
             return self._wait_via_ocr(
                 target, phase1_max_wait, phase2_max_wait, fps, stable_frames
             )
         return self._wait_via_ssim(
-            ctx, img_before, phase1_max_wait, phase2_max_wait, fps, stable_frames
+            ctx,
+            img_before,
+            phase1_max_wait,
+            phase2_max_wait,
+            fps,
+            stable_frames,
+            expected_edges=expected_edges,
         )
 
     def _wait_via_ocr(
@@ -441,10 +613,27 @@ class Mover:
             # 直接到达（少见但要兜住：start_pos 错或 click 极快）
             if coord == target:
                 keyframes["arrived"] = roi_pil
+                log.debug(
+                    "ocr-wait OK in phase1: %s→%s, 耗时 %.3fs, ocr=%d/%d 成功",
+                    start_pos,
+                    target,
+                    time.perf_counter() - t_start,
+                    ocr_success,
+                    ocr_calls,
+                )
                 return WaitOutcome(WaitStatus.OK, coord)
             if coord != start_pos:
                 moved_started = True
                 keyframes["phase1_first_change"] = roi_pil
+                log.debug(
+                    "ocr-wait phase1→2: 坐标变化 %s→%s (target=%s), phase1 耗时 %.3fs, ocr=%d/%d 成功",
+                    start_pos,
+                    coord,
+                    target,
+                    time.perf_counter() - t_start,
+                    ocr_success,
+                    ocr_calls,
+                )
                 break
 
         if not moved_started:
@@ -473,6 +662,12 @@ class Mover:
             last_roi = roi_pil
             if coord == target:
                 keyframes["arrived"] = roi_pil
+                log.debug(
+                    "ocr-wait OK in phase2: %s→%s, 总耗时 %.3fs",
+                    start_pos,
+                    target,
+                    time.perf_counter() - t_start,
+                )
                 return WaitOutcome(WaitStatus.OK, coord)
 
         # 阶段2 超时，没读到 target —— 这是真实的"角色没走到目标"
@@ -496,10 +691,23 @@ class Mover:
         fps: float,
         stable_frames: int,
         threshold: float = 0.01,
+        expected_edges: Optional[int] = None,
     ) -> WaitOutcome:
+        """
+        SSIM 模式 minimap ROI 到达判定。
+
+        phase1: 等 ROI 内画面第一次变化 (角色起步 / 坐标数字第一次刷新)。
+        phase2: 两种模式 ——
+          - expected_edges 已给: 数 phase2 内"stable→change"上升沿次数,
+            连同 phase1 出口的第 1 个上升沿, 总数达到 expected_edges 立即 OK。
+            (烟雨江湖 minimap 坐标每过一格刷新一次, 走 N 格 = N 个上升沿。)
+          - expected_edges 为 None: fallback 到旧的"连续 stable_frames 帧 diff<threshold"
+            判定 (适合 fly 段, 它的画面变化模式不是逐格刷新)。
+        """
         roi = ctx.minimap_coord_roi
         if roi is None:
             # 没标定 ROI 也没 OCR：完全无法判断，傻等一下当作成功
+            log.debug("ssim-wait: 无 ROI, 走 fallback sleep 0.2s 当作 OK")
             time.sleep(0.2)
             return WaitOutcome(WaitStatus.OK, None)
 
@@ -508,42 +716,236 @@ class Mover:
 
         delay = 1.0 / fps
         last = _crop(img_before) if img_before is not None else None
+        t_start = time.perf_counter()
+        mode_desc = (
+            f"edge_count(expected={expected_edges})"
+            if expected_edges is not None and expected_edges >= 1
+            else f"stable_count(stable_frames={stable_frames})"
+        )
+        log.debug(
+            "ssim-wait phase1 begin: max_wait=%.2fs, fps=%.1f, threshold=%.4f, "
+            "phase2 mode=%s, has_baseline=%s",
+            phase1_max_wait,
+            fps,
+            threshold,
+            mode_desc,
+            last is not None,
+        )
 
-        # ---- 阶段 1: 等画面变 ----
+        # ---- 阶段 1: 等画面变 (第一次坐标刷新 / 起步动画) ----
         deadline = time.perf_counter() + phase1_max_wait
         changed = False
+        frame_idx = 0
         while time.perf_counter() < deadline:
             time.sleep(delay)
+            t_cap = time.perf_counter()
             img = _crop(self.mumu.capture_window())
+            cap_dur = time.perf_counter() - t_cap
+            frame_idx += 1
             if last is None:
+                log.debug(
+                    "ssim p1 frame %d: capture=%.3fs (建立 baseline)",
+                    frame_idx,
+                    cap_dur,
+                )
                 last = img
                 continue
             d = self.mumu.diff_img(img, last)
             last = img
+            log.debug(
+                "ssim p1 frame %d: capture=%.3fs diff=%s",
+                frame_idx,
+                cap_dur,
+                f"{d:.4f}" if d is not None else "None",
+            )
             if d is not None and d > threshold:
                 changed = True
                 break
 
+        p1_dur = time.perf_counter() - t_start
         if not changed:
+            log.debug(
+                "ssim-wait NO_CHANGE: phase1 超时 %.3fs (max %.2fs), 共 %d 帧",
+                p1_dur,
+                phase1_max_wait,
+                frame_idx,
+            )
             return WaitOutcome(WaitStatus.NO_CHANGE, None)
 
-        # ---- 阶段 2: 连续 stable_frames 帧 diff < threshold ----
+        log.debug(
+            "ssim-wait phase1→2: 检测到第 1 次变化, phase1 耗时 %.3fs, 共 %d 帧",
+            p1_dur,
+            frame_idx,
+        )
+
+        # ---- 阶段 2 ----
+        t_p2 = time.perf_counter()
         deadline = time.perf_counter() + phase2_max_wait
+        p2_frames = 0
+
+        # ===== 模式 A: 上升沿计数 + 上升沿后 stable 兜底 (普通 move 段) =====
+        if expected_edges is not None and expected_edges >= 1:
+            # 烟雨江湖 minimap 坐标每过一格刷新一次 ROI 内画面, 走 N 格 = N 个上升沿
+            #
+            # 但"上升沿瞬间"只代表坐标 ROI 正在被重绘, 数字此时可能没完全写完。
+            # 真正"坐标已经稳定到 target"的判定是: 上升沿之后再看到至少 1 帧 stable。
+            # 这个兜底避免下一步 (button click 等) 在画面还在最后一格刷新瞬间触发,
+            # 被游戏判为"角色未站定"而失败。
+            POST_EDGE_STABLE = 1  # 上升沿后还需的稳定帧数, 1 帧 (~100ms) 实测够用
+
+            edges_seen = 1  # phase1 出口已计第 1 个上升沿
+            state = "changing"  # 当前处于变化态(刚检测到 diff > threshold)
+            post_stable = 0  # 当前上升沿之后已观察到的连续 stable 帧数
+
+            log.debug(
+                "ssim phase2 mode=edge_count: 已计 1 个上升沿, 还需 %d 个 "
+                "(每个上升沿后需 %d 帧 stable 兜底)",
+                expected_edges - 1,
+                POST_EDGE_STABLE,
+            )
+
+            while time.perf_counter() < deadline:
+                time.sleep(delay)
+                t_cap = time.perf_counter()
+                img = _crop(self.mumu.capture_window())
+                cap_dur = time.perf_counter() - t_cap
+                d = self.mumu.diff_img(img, last)
+                last = img
+                p2_frames += 1
+                if d is None:
+                    log.debug(
+                        "ssim p2 frame %d: capture=%.3fs diff=None (skip)",
+                        p2_frames,
+                        cap_dur,
+                    )
+                    continue
+                if d > threshold:
+                    # 重置 post_stable; state 转 changing; 若上一帧是 stable 则计上升沿
+                    if state == "stable":
+                        edges_seen += 1
+                        log.debug(
+                            "ssim p2 frame %d: capture=%.3fs diff=%.4f "
+                            "上升沿 → edges=%d/%d",
+                            p2_frames,
+                            cap_dur,
+                            d,
+                            edges_seen,
+                            expected_edges,
+                        )
+                    else:
+                        log.debug(
+                            "ssim p2 frame %d: capture=%.3fs diff=%.4f (changing 中)",
+                            p2_frames,
+                            cap_dur,
+                            d,
+                        )
+                    state = "changing"
+                    post_stable = 0
+                else:
+                    if state == "changing":
+                        state = "stable"
+                    post_stable += 1
+                    log.debug(
+                        "ssim p2 frame %d: capture=%.3fs diff=%.4f stable "
+                        "(edges=%d/%d, post_stable=%d/%d)",
+                        p2_frames,
+                        cap_dur,
+                        d,
+                        edges_seen,
+                        expected_edges,
+                        post_stable,
+                        POST_EDGE_STABLE,
+                    )
+                    # 满足条件: 上升沿数够 + 当前已稳定 ≥ POST_EDGE_STABLE 帧
+                    if edges_seen >= expected_edges and post_stable >= POST_EDGE_STABLE:
+                        log.debug(
+                            "ssim-wait OK in phase2: edges=%d/%d 满足且 "
+                            "post_stable=%d/%d, phase2 耗时 %.3fs, 总耗时 %.3fs",
+                            edges_seen,
+                            expected_edges,
+                            post_stable,
+                            POST_EDGE_STABLE,
+                            time.perf_counter() - t_p2,
+                            time.perf_counter() - t_start,
+                        )
+                        return WaitOutcome(WaitStatus.OK, None)
+
+            log.debug(
+                "ssim-wait NOT_STABLE: phase2 超时 %.3fs (共 %d 帧), "
+                "edges=%d/%d 未达成 (post_stable=%d)",
+                time.perf_counter() - t_p2,
+                p2_frames,
+                edges_seen,
+                expected_edges,
+                post_stable,
+            )
+            return WaitOutcome(WaitStatus.NOT_STABLE, None)
+
+        # ===== 模式 B: 连续稳定帧 (fly 段或未指定 expected_edges) =====
         stable_count = 0
+        max_stable = 0
         while time.perf_counter() < deadline:
             time.sleep(delay)
+            t_cap = time.perf_counter()
             img = _crop(self.mumu.capture_window())
+            cap_dur = time.perf_counter() - t_cap
             d = self.mumu.diff_img(img, last)
             last = img
+            p2_frames += 1
             if d is None:
+                log.debug(
+                    "ssim p2 frame %d: capture=%.3fs diff=None (skip)",
+                    p2_frames,
+                    cap_dur,
+                )
                 continue
             if d < threshold:
                 stable_count += 1
+                max_stable = max(max_stable, stable_count)
+                log.debug(
+                    "ssim p2 frame %d: capture=%.3fs diff=%.4f stable=%d/%d",
+                    p2_frames,
+                    cap_dur,
+                    d,
+                    stable_count,
+                    stable_frames,
+                )
                 if stable_count >= stable_frames:
+                    log.debug(
+                        "ssim-wait OK in phase2 (stable mode): 连续稳定 %d 帧, "
+                        "phase2 耗时 %.3fs, 总耗时 %.3fs",
+                        stable_frames,
+                        time.perf_counter() - t_p2,
+                        time.perf_counter() - t_start,
+                    )
                     return WaitOutcome(WaitStatus.OK, None)
             else:
+                if stable_count > 0:
+                    log.debug(
+                        "ssim p2 frame %d: capture=%.3fs diff=%.4f "
+                        "连续稳定中断 (was %d)",
+                        p2_frames,
+                        cap_dur,
+                        d,
+                        stable_count,
+                    )
+                else:
+                    log.debug(
+                        "ssim p2 frame %d: capture=%.3fs diff=%.4f stable=0",
+                        p2_frames,
+                        cap_dur,
+                        d,
+                    )
                 stable_count = 0
 
+        log.debug(
+            "ssim-wait NOT_STABLE (stable mode): phase2 超时 %.3fs (共 %d 帧), "
+            "max 连续稳定数 %d (要求 %d)",
+            time.perf_counter() - t_p2,
+            p2_frames,
+            max_stable,
+            stable_frames,
+        )
         return WaitOutcome(WaitStatus.NOT_STABLE, None)
 
     # ========================================================================

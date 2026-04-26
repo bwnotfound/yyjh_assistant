@@ -17,10 +17,10 @@ from PySide6.QtWidgets import (
 
 from utils import Mumu, MumuError
 
+from app.views.debug_tools_dialog import DebugToolsDialog
 from app.views.map_registry_dialog import MapRegistryDialog
 from app.views.movement_profile_dialog import MovementProfileDialog
-from app.views.position_picker import PositionPickerDialog
-from app.views.roi_capture_dialog import RoiCaptureDialog
+from app.views.routine_editor_dialog import RoutineEditorDialog
 from app.views.routine_runner_dialog import RoutineRunnerDialog
 
 log = logging.getLogger(__name__)
@@ -33,10 +33,10 @@ class MainWindow(QMainWindow):
         self.resize(420, 440)
 
         self._mumu: Optional[Mumu] = None
-        self._picker: Optional[PositionPickerDialog] = None
+        self._debug_tools_dlg: Optional[DebugToolsDialog] = None
         self._map_registry_dlg: Optional[MapRegistryDialog] = None
         self._movement_profile_dlg: Optional[MovementProfileDialog] = None
-        self._roi_capture_dlg: Optional[RoiCaptureDialog] = None
+        self._routine_editor_dlg: Optional[RoutineEditorDialog] = None
         self._runner_dlg: Optional[RoutineRunnerDialog] = None
 
         self._build_ui()
@@ -53,15 +53,10 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        btn_picker = QPushButton("取位置工具")
-        btn_picker.setMinimumHeight(40)
-        btn_picker.clicked.connect(self._open_picker)
-        layout.addWidget(btn_picker)
-
-        btn_roi = QPushButton("ROI 截取工具")
-        btn_roi.setMinimumHeight(40)
-        btn_roi.clicked.connect(self._open_roi_capture)
-        layout.addWidget(btn_roi)
+        btn_debug = QPushButton("调试工具")
+        btn_debug.setMinimumHeight(40)
+        btn_debug.clicked.connect(self._open_debug_tools)
+        layout.addWidget(btn_debug)
 
         btn_map = QPushButton("添加地图信息")
         btn_map.setMinimumHeight(40)
@@ -72,6 +67,11 @@ class MainWindow(QMainWindow):
         btn_mov.setMinimumHeight(40)
         btn_mov.clicked.connect(self._open_movement_profile)
         layout.addWidget(btn_mov)
+
+        btn_edit_routine = QPushButton("编辑 Routine")
+        btn_edit_routine.setMinimumHeight(40)
+        btn_edit_routine.clicked.connect(self._open_routine_editor)
+        layout.addWidget(btn_edit_routine)
 
         btn_run = QPushButton("执行 Routine")
         btn_run.setMinimumHeight(40)
@@ -106,27 +106,16 @@ class MainWindow(QMainWindow):
 
     # ---------------- 功能入口 ----------------
 
-    def _open_picker(self) -> None:
+    def _open_debug_tools(self) -> None:
         mumu = self._try_get_mumu()
         if mumu is None:
             return
-        if self._picker is None:
-            self._picker = PositionPickerDialog(mumu, parent=self)
-            self._picker.setAttribute(Qt.WA_DeleteOnClose, False)
-        self._picker.show()
-        self._picker.raise_()
-        self._picker.activateWindow()
-
-    def _open_roi_capture(self) -> None:
-        mumu = self._try_get_mumu()
-        if mumu is None:
-            return
-        if self._roi_capture_dlg is None:
-            self._roi_capture_dlg = RoiCaptureDialog(mumu, parent=self)
-            self._roi_capture_dlg.setAttribute(Qt.WA_DeleteOnClose, False)
-        self._roi_capture_dlg.show()
-        self._roi_capture_dlg.raise_()
-        self._roi_capture_dlg.activateWindow()
+        if self._debug_tools_dlg is None:
+            self._debug_tools_dlg = DebugToolsDialog(mumu, parent=self)
+            self._debug_tools_dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._debug_tools_dlg.show()
+        self._debug_tools_dlg.raise_()
+        self._debug_tools_dlg.activateWindow()
 
     def _open_map_registry(self) -> None:
         mumu = self._try_get_mumu()
@@ -150,6 +139,17 @@ class MainWindow(QMainWindow):
         self._movement_profile_dlg.raise_()
         self._movement_profile_dlg.activateWindow()
 
+    def _open_routine_editor(self) -> None:
+        mumu = self._try_get_mumu()
+        if mumu is None:
+            return
+        if self._routine_editor_dlg is None:
+            self._routine_editor_dlg = RoutineEditorDialog(mumu, parent=self)
+            self._routine_editor_dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._routine_editor_dlg.show()
+        self._routine_editor_dlg.raise_()
+        self._routine_editor_dlg.activateWindow()
+
     def _open_runner(self) -> None:
         mumu = self._try_get_mumu()
         if mumu is None:
@@ -165,10 +165,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, ev) -> None:
         for dlg in (
-            self._picker,
-            self._roi_capture_dlg,
+            self._debug_tools_dlg,
             self._map_registry_dlg,
             self._movement_profile_dlg,
+            self._routine_editor_dlg,
             self._runner_dlg,
         ):
             if dlg is not None:

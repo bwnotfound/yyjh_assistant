@@ -1,0 +1,39 @@
+name: 帝陵副本
+loop_count: 1
+loop_interval: 0.0
+starting_map: 帝陵内部
+steps:
+- type: move
+  path:
+  - [5, 31]
+  - [6, 26]
+- {type: sleep, seconds: 1.5}
+- type: move
+  path:
+  - [6, 26]
+  - [6, 23]
+- {type: button, name: table_2, skip: 1, delay: 0.5}
+- {type: button, name: chat_1}
+- {type: sleep, seconds: 3.0}
+- type: move
+  path:
+  - [6, 13]
+  - [6, 12]
+- {type: sleep, seconds: 1.5}
+- type: move
+  path:
+  - [6, 12]
+  - [6, 9]
+- {type: sleep, seconds: 1.5}
+- type: move
+  path:
+  - [6, 9]
+  - [6, 4]
+- {type: sleep, seconds: 3.0}
+- type: move
+  path:
+  - [10, 15]
+  - [10, 10]
+  - [9, 6]
+- {type: button, name: table_2, skip: 1, delay: 0.5}
+- {type: button, name: chat_1, delay: 0.8}

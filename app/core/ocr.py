@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -101,6 +102,7 @@ class TemplateGlyph:
 
     char: str
     bin_image: np.ndarray  # uint8, 0 或 255
+    score_threshold: Optional[float] = None  # 覆盖 OCR 全局阈值; None=用全局
 
     @property
     def height(self) -> int:
@@ -151,6 +153,13 @@ class TemplateOCR:
             self.nms_box_factor,
         )
 
+    # 标点字符 (`(` `)` `,`) 在屏幕上像素少, NCC 容错性差: 即使在干净 sample
+    # 上, 逗号最高分也只有 ~0.80 (实测), 几个像素抖动就跌破默认 0.78。
+    # 数字模板像素多, 容错强, 保持默认。
+    # 给标点单独降到 0.55 实测在 sample 上无误识别 (它们位置高度受限, 误命中
+    # 风险低), 同时能救回大量 marginal 帧。
+    _PUNCTUATION_SCORE_TH: float = 0.55
+
     @classmethod
     def from_dir(
         cls,
@@ -172,7 +181,15 @@ class TemplateOCR:
                 continue
             arr = np.array(Image.open(path).convert("RGB"))
             bin_img = binarize(arr, block, C)
-            glyphs.append(TemplateGlyph(char=char, bin_image=bin_img))
+            # 标点字符像素少, 单独降 threshold (见 _PUNCTUATION_SCORE_TH 注释)
+            per_glyph_th: Optional[float] = None
+            if char in ("(", ")", ","):
+                per_glyph_th = cls._PUNCTUATION_SCORE_TH
+            glyphs.append(
+                TemplateGlyph(
+                    char=char, bin_image=bin_img, score_threshold=per_glyph_th
+                )
+            )
         if not glyphs:
             raise FileNotFoundError(
                 f"模板目录 {template_dir} 没找到任何模板（期望文件名: "
@@ -192,8 +209,13 @@ class TemplateOCR:
         for g in self.glyphs:
             if g.height > H or g.width > W:
                 continue
+            th = (
+                g.score_threshold
+                if g.score_threshold is not None
+                else self.score_threshold
+            )
             res = cv2.matchTemplate(roi, g.bin_image, cv2.TM_CCOEFF_NORMED)
-            ys, xs = np.where(res >= self.score_threshold)
+            ys, xs = np.where(res >= th)
             for x, y in zip(xs, ys):
                 cx = x + g.width / 2.0
                 candidates.append((cx, g.char, float(res[y, x]), g.width))
@@ -221,7 +243,7 @@ class TemplateOCR:
 
     def all_candidates_above_threshold(self, roi_rgb: np.ndarray) -> list[dict]:
         """
-        诊断用：列出所有 score >= score_threshold 的候选位置（不做 NMS）。
+        诊断用：列出所有 score >= 该字符 threshold 的候选位置（不做 NMS）。
         返回按 cx 升序排序的 list of dict。
         """
         roi = binarize(roi_rgb, self.binarize_block, self.binarize_C)
@@ -230,8 +252,13 @@ class TemplateOCR:
         for g in self.glyphs:
             if g.height > H or g.width > W:
                 continue
+            th = (
+                g.score_threshold
+                if g.score_threshold is not None
+                else self.score_threshold
+            )
             res = cv2.matchTemplate(roi, g.bin_image, cv2.TM_CCOEFF_NORMED)
-            ys, xs = np.where(res >= self.score_threshold)
+            ys, xs = np.where(res >= th)
             for x, y in zip(xs, ys):
                 cands.append(
                     {
@@ -240,6 +267,7 @@ class TemplateOCR:
                         "tl": (int(x), int(y)),
                         "size": (g.width, g.height),
                         "cx": float(x + g.width / 2.0),
+                        "threshold": th,
                     }
                 )
         cands.sort(key=lambda c: c["cx"])
@@ -257,6 +285,11 @@ class TemplateOCR:
             entry = {
                 "char": g.char,
                 "template_size": (g.width, g.height),
+                "threshold": (
+                    g.score_threshold
+                    if g.score_threshold is not None
+                    else self.score_threshold
+                ),
             }
             if g.height > H or g.width > W:
                 entry["skipped"] = "template_larger_than_roi"
@@ -288,7 +321,10 @@ class CoordReader:
     工作流: capture → crop ROI → TemplateOCR.recognize → 正则解析。
     """
 
+    # 主匹配: 标准 "(X,Y)"
     _COORD_RE = re.compile(r"\((\d+)\s*,\s*(\d+)\)")
+    # Fallback: 逗号识别失败时的兜底, 形如 "(NNNN)" - 期望 2 或 4 位数字, 各取一半
+    _COORD_RE_NOCOMMA = re.compile(r"\((\d+)\)")
 
     def __init__(
         self,
@@ -323,17 +359,80 @@ class CoordReader:
         返回: (coord_or_None, raw_text, roi_pil)
         """
         if image is None:
+            t0 = time.perf_counter()
             image = self.mumu.capture_window()
+            t_cap = time.perf_counter() - t0
+        else:
+            t_cap = 0.0
+        t1 = time.perf_counter()
         cropped = self.mumu.crop_img(image, self.roi_norm[:2], self.roi_norm[2:])
         roi_rgb = np.array(cropped.convert("RGB"))
         text = self.ocr.recognize(roi_rgb)
+        t_rec = time.perf_counter() - t1
         if not text:
+            log.debug(
+                "read_verbose: capture=%.3fs recognize=%.3fs text=∅", t_cap, t_rec
+            )
             return None, "", cropped
         m = self._COORD_RE.search(text)
-        if not m:
-            log.debug("坐标解析失败，OCR 文本: %r", text)
+        if m:
+            coord = (int(m.group(1)), int(m.group(2)))
+            log.debug(
+                "read_verbose: capture=%.3fs recognize=%.3fs coord=%s",
+                t_cap,
+                t_rec,
+                coord,
+            )
+            return coord, text, cropped
+
+        # 主正则失败 - 尝试 fallback: 逗号识别失败时只剩 "(NNNN)" 这种
+        # 数字位数 == 2: 拆 1+1, 形如 (1,9)
+        # 数字位数 == 4: 拆 2+2, 形如 (12,19)
+        # 其它 (1/3/≥5 位): 歧义或不合理, 放弃, 让上层 100ms 后重试
+        m_fb = self._COORD_RE_NOCOMMA.search(text)
+        if m_fb:
+            digits = m_fb.group(1)
+            n = len(digits)
+            if n == 2:
+                coord = (int(digits[0]), int(digits[1]))
+                log.debug(
+                    "read_verbose fallback (1+1): capture=%.3fs recognize=%.3fs "
+                    "text=%r → %s (逗号识别失败, 按 1+1 拆)",
+                    t_cap,
+                    t_rec,
+                    text,
+                    coord,
+                )
+                return coord, text, cropped
+            if n == 4:
+                coord = (int(digits[:2]), int(digits[2:]))
+                log.debug(
+                    "read_verbose fallback (2+2): capture=%.3fs recognize=%.3fs "
+                    "text=%r → %s (逗号识别失败, 按 2+2 拆)",
+                    t_cap,
+                    t_rec,
+                    text,
+                    coord,
+                )
+                return coord, text, cropped
+            log.debug(
+                "read_verbose: capture=%.3fs recognize=%.3fs text=%r 解析失败 "
+                "(fallback 数字位数 %d 歧义/不合理, 放弃)",
+                t_cap,
+                t_rec,
+                text,
+                n,
+            )
             return None, text, cropped
-        return (int(m.group(1)), int(m.group(2))), text, cropped
+
+        log.debug(
+            "read_verbose: capture=%.3fs recognize=%.3fs text=%r 解析失败 "
+            "(无 fallback 模式命中)",
+            t_cap,
+            t_rec,
+            text,
+        )
+        return None, text, cropped
 
     def diagnose(self, image: Optional[Image.Image] = None) -> dict:
         """

@@ -38,6 +38,12 @@ from PySide6.QtWidgets import (
 
 from utils import Mumu
 
+from app.core.profiles import (
+    DEFAULT_MOVEMENT_YAML_PATH,
+    MovementProfile,
+    MovementRegistry,
+)
+from app.views.map_size_solver_dialog import MapSizeSolverDialog
 from config.common.map_registry import (
     DEFAULT_LOCATIONS,
     DEFAULT_YAML_PATH,
@@ -184,6 +190,9 @@ class MapRegistryDialog(QDialog):
         form.addRow("按钮偏移像素:", self._lbl_offset)
 
         # 地图几何（可编辑）
+        # 第一行: w × h spinbox + "反解..." 按钮 (反解需要 vision_size, 所以放在
+        # 视野下拉之后会更直观, 但视觉一致性上还是把按钮放在 size 行右边, 因为
+        # "反解 size" 语义直接对应这两个 spinbox)
         map_size_row = QHBoxLayout()
         self._map_w = QSpinBox()
         self._map_w.setRange(0, 999)
@@ -196,6 +205,14 @@ class MapRegistryDialog(QDialog):
         map_size_row.addWidget(self._map_w)
         map_size_row.addWidget(QLabel("×"))
         map_size_row.addWidget(self._map_h)
+        # 反解按钮: 调用方负责检查依赖参数齐全 (view_area / character_pos / vision_size)
+        self._btn_solve_size = QPushButton("反解…")
+        self._btn_solve_size.setToolTip(
+            "通过 OCR + 角色屏幕实际位置反解 map_size.\n"
+            "要求当前地图已选视野档位, 且运动配置中已配 view_area + character_pos."
+        )
+        self._btn_solve_size.clicked.connect(self._on_solve_map_size)
+        map_size_row.addWidget(self._btn_solve_size)
         map_size_row.addStretch(1)
         form.addRow("地图格数 (w×h):", _wrap(map_size_row))
 
@@ -381,6 +398,8 @@ class MapRegistryDialog(QDialog):
         self._btn_remove_loc.setEnabled(has_name)
         self._btn_verify_snap.setEnabled(has_record)
         self._btn_verify_click.setEnabled(has_record)
+        # 反解按钮: 只要选中了地名就允许点 (依赖检查在 handler 内做; 错时弹引导)
+        self._btn_solve_size.setEnabled(has_name)
 
     # =========================================================================
     # 越界检测
@@ -567,6 +586,110 @@ class MapRegistryDialog(QDialog):
         )
         self._reload_location_list()
         self._select_by_name(name)
+
+    # =========================================================================
+    # 反解 map_size
+    # =========================================================================
+
+    def _on_solve_map_size(self) -> None:
+        """
+        唤起 MapSizeSolverDialog 反解当前选中地图的 map_size, 应用结果填回
+        spinbox (用户后续点"保存到 YAML"才落盘, 与现有交互一致).
+
+        依赖检查 (任一缺失 → 弹引导, 不打开工具):
+          · 选中了一个地图
+          · 当前地图设置了视野档位 (vision_size)
+          · 运动配置 (movement_profile.yaml) 已加载, 且当前分辨率有 profile
+          · 该 profile 已配 character_pos (默认值也算配, 但 view_area 必须显式)
+          · 该 profile 已配 map_view_area
+          · 该 profile 的 vision_sizes 里有当前地图选的视野档位
+        """
+        name = self._current_name()
+        if name is None:
+            QMessageBox.information(
+                self, "未选地图", "请先在左侧地点列表选中要反解的地图."
+            )
+            return
+        rec = self._profile.locations[name]
+
+        vision_name = rec.vision_size
+        if not vision_name:
+            QMessageBox.warning(
+                self,
+                "缺少视野档位",
+                f"地图「{name}」尚未设置视野档位.\n"
+                f"请先在右侧「视野档位」下拉里选小/中/大, 再点反解.",
+            )
+            return
+
+        # 加载运动配置
+        try:
+            mov_reg = MovementRegistry.load(DEFAULT_MOVEMENT_YAML_PATH)
+        except Exception as e:
+            log.exception("加载 movement_profile 失败")
+            QMessageBox.critical(
+                self,
+                "运动配置加载失败",
+                f"读取 {DEFAULT_MOVEMENT_YAML_PATH} 失败:\n{type(e).__name__}: {e}",
+            )
+            return
+
+        key = f"{self._mumu.device_w}x{self._mumu.device_h}"
+        mp: Optional[MovementProfile] = mov_reg.profiles.get(key)
+        if mp is None:
+            QMessageBox.warning(
+                self,
+                "运动配置缺失",
+                f"未找到分辨率 {key} 的运动配置.\n"
+                f"请先在主界面「运动配置」里录入 character_pos / view_area / 视野档位.",
+            )
+            return
+
+        if mp.map_view_area is None:
+            QMessageBox.warning(
+                self,
+                "view_area 未配置",
+                "反解 map_size 需要先配好 map_view_area.\n"
+                "请去「调试工具 → 反解可视区域」标定后再来.",
+            )
+            return
+
+        if vision_name not in mp.vision_sizes:
+            QMessageBox.warning(
+                self,
+                "视野档位未配置 block_size",
+                f"地图「{name}」选的视野档位「{vision_name}」在运动配置里没有对应"
+                f"的 block_size 项.\n请去「运动配置」里给该视野档位录入 block_size.",
+            )
+            return
+
+        # 当前 spinbox 值作为 initial_size 传入 (允许"只反解一个维度, 另一个保留")
+        initial = (self._map_w.value(), self._map_h.value())
+
+        dlg = MapSizeSolverDialog(
+            mumu=self._mumu,
+            movement_profile=mp,
+            vision_name=vision_name,
+            map_label=name,
+            initial_size=initial,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        if dlg.accepted_size is None:
+            return  # 防御; accepted 时 accepted_size 应该已设
+        mw, mh = dlg.accepted_size
+
+        # 写回 spinbox (会触发 _on_map_geom_changed → 即时同步到 LocationRecord)
+        self._map_w.setValue(mw)
+        self._map_h.setValue(mh)
+        log.info(
+            "「%s」反解结果应用: map_size=(%d, %d), 待用户点保存才落盘", name, mw, mh
+        )
+
+        # 触发越界警告刷新 (map_size 变了, 但当前 _check_warnings 只看 icon/btn,
+        # 不依赖 map_size, 所以实际不会变. 留一手以防未来 _check_warnings 扩展)
+        self._refresh_detail()
 
     # =========================================================================
     # 大地图尺寸 / 保存加载

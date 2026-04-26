@@ -1,0 +1,25 @@
+name: 黑水沟去帝陵
+loop_count: 1
+loop_interval: 0.0
+starting_map: 黑水沟
+steps:
+- type: move
+  path:
+  - [19, 16]
+  - [13, 14]
+  - [10, 10]
+  - [10, 7]
+  - [-1, -1]
+  - [6, 7]
+  - [0, 8]
+- {type: sleep, seconds: 3.0}
+- type: move
+  at_map: 帝陵
+  path:
+  - [7, 14]
+  - [8, 7]
+  - [8, 6]
+- type: click
+  pos: [0.5, 0.5]
+  preset: blank_btn
+- {type: button, name: chat_4, delay: 0.2}

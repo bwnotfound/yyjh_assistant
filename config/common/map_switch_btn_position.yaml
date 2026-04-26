@@ -53,6 +53,8 @@ profiles:
         icon_on_bigmap_pixel: [2253.97, 160.48]
         btn_offset_pixel: [-264.68, 346.99]
         recorded_at_corner: NE
+        map_size: [19, 19]
+        vision_size: 小
       姑苏:
         icon_on_bigmap_pixel: [1869.97, 863.37]
         btn_offset_pixel: [-267.93, 274.34]
@@ -126,3 +128,9 @@ profiles:
       返回洛阳: {}
       玛尔部落:
         map_size: [34, 29]
+      帝陵:
+        map_size: [14, 14]
+        vision_size: 小
+      帝陵内部:
+        map_size: [23, 23]
+        vision_size: 小

@@ -1,0 +1,1 @@
+from app.views.map_size_solver_dialog.window import MapSizeSolverDialog

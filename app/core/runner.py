@@ -6,8 +6,7 @@ RoutineRunner - 把 Routine 的每个 Step 分派到具体执行。
   - 暂停 / 单步  (step_event)
   - 日志回调 (on_log)
   - 进度回调 (on_progress: step_idx, total, loop_idx, loop_total)
-  - 移动闭环：若 movement_profile 配了 minimap_coord_roi 且
-    config/templates/minimap_coord/ 下有字符模板，自动启用 OCR 校验
+  - include step: 串联执行另一份 routine 文件，带防环检测
 
 执行方式: 同步运行于调用线程。GUI 的 runner_dialog 用 QThread 包装调度。
 """
@@ -32,7 +31,9 @@ from app.core.routine import (
     ButtonStep,
     BuyStep,
     ClickStep,
+    DEFAULT_ROUTINES_DIR,
     EnterMapStep,
+    IncludeStep,
     MoveStep,
     Routine,
     SleepStep,
@@ -49,8 +50,9 @@ from config.common.map_registry import (
 log = logging.getLogger(__name__)
 
 
-# OCR 字符模板目录
-DEFAULT_OCR_TEMPLATE_DIR = Path("config/templates/minimap_coord")
+# 字符模板目录（与各 view 的 OCR 链路保持一致：click_preview / map_size_solver /
+# view_area_solver / routine_editor 等都用同一个目录）
+MINIMAP_TEMPLATE_DIR = Path("config/templates/minimap_coord")
 
 
 class RoutineCancelled(Exception):
@@ -133,50 +135,6 @@ def _maybe_wait_step(hooks: RunnerHooks) -> None:
 
 
 # =============================================================================
-# OCR 构造（启动时一次）
-# =============================================================================
-
-
-def _maybe_build_coord_reader(
-    mumu: Mumu,
-    mp: MovementProfile,
-    template_dir: Path = DEFAULT_OCR_TEMPLATE_DIR,
-) -> Optional[CoordReader]:
-    """
-    根据 movement_profile 和模板目录决定是否启用 OCR 闭环。
-    任一条件不满足都返回 None（降级到 SSIM 等待逻辑），并 log 原因。
-    """
-    if mp.minimap_coord_roi is None:
-        log.info(
-            "movement_profile (%s) 未配置 minimap_coord_roi，"
-            "OCR 闭环禁用，使用 SSIM 等待逻辑",
-            mp.key,
-        )
-        return None
-    if not template_dir.exists():
-        log.warning(
-            "OCR 模板目录不存在: %s，OCR 闭环禁用，使用 SSIM 等待逻辑",
-            template_dir,
-        )
-        return None
-    try:
-        ocr = TemplateOCR.from_dir(template_dir)
-    except Exception as e:
-        log.warning(
-            "OCR 模板加载失败 (%s: %s)，降级到 SSIM 等待逻辑",
-            type(e).__name__,
-            e,
-        )
-        return None
-    log.info(
-        "OCR 闭环启用: roi=%s, template_dir=%s",
-        mp.minimap_coord_roi,
-        template_dir,
-    )
-    return CoordReader(mumu=mumu, ocr=ocr, roi_norm=mp.minimap_coord_roi)
-
-
-# =============================================================================
 # RoutineRunner
 # =============================================================================
 
@@ -202,10 +160,62 @@ class RoutineRunner:
                 f"map_registry 里没有分辨率 {movement_profile.key} 的 profile"
             )
         self._coord = CoordSystem(self._map_profile, map_registry.constraints)
-
-        coord_reader = _maybe_build_coord_reader(mumu, movement_profile)
+        coord_reader = self._build_coord_reader()
         self._mover = Mover(mumu, movement_profile, coord_reader=coord_reader)
         self._current_map: Optional[str] = routine.starting_map
+
+        # include 调用栈：用解析出来的绝对路径做 key 防环
+        self._include_stack: list[Path] = []
+        if routine.path is not None:
+            self._include_stack.append(routine.path.resolve())
+
+    # ========================================================================
+    # OCR 链路构造
+    # ========================================================================
+
+    def _build_coord_reader(self) -> Optional[CoordReader]:
+        """
+        默认尝试启用 OCR 模式 (Mover._wait_via_ocr): 用模板匹配从小地图 ROI 读
+        坐标值, 走完一格立即检测到 coord==target 即返回, 比 SSIM 模式快得多。
+
+        以下任一缺失则 fallback 到 SSIM 模式 (画面变化判定), 同时给出明确告警:
+          - movement_profile 未配置 minimap_coord_roi
+          - 模板目录不存在 / 无可用模板
+          - 模板加载抛任何异常
+        """
+        roi = self.movement_profile.minimap_coord_roi
+        if roi is None:
+            _log(
+                self.hooks,
+                "warning",
+                "OCR 模式不可用: movement_profile 未配置 minimap_coord_roi, "
+                "fallback 到 SSIM 模式 (慢, 走路靠画面变化判定)。"
+                "请用主界面「ROI 截取工具」录入小地图坐标 ROI 以启用 OCR。",
+            )
+            return None
+        try:
+            template_ocr = TemplateOCR.from_dir(MINIMAP_TEMPLATE_DIR)
+        except FileNotFoundError as e:
+            _log(
+                self.hooks,
+                "warning",
+                f"OCR 模式不可用: 模板目录 {MINIMAP_TEMPLATE_DIR} 缺失或无可用模板 "
+                f"({e}), fallback 到 SSIM 模式。请录入字符模板 (0~9 + ( ) ,)。",
+            )
+            return None
+        except Exception as e:
+            _log(
+                self.hooks,
+                "warning",
+                f"OCR 模板加载失败: {type(e).__name__}: {e}, " f"fallback 到 SSIM 模式",
+            )
+            return None
+        _log(
+            self.hooks,
+            "info",
+            f"OCR 坐标读取链路就绪: roi={roi}, template_dir={MINIMAP_TEMPLATE_DIR}",
+        )
+        return CoordReader(self.mumu, template_ocr, roi)
 
     # ========================================================================
     # 主循环
@@ -254,9 +264,20 @@ class RoutineRunner:
     # 分派
     # ========================================================================
 
-    def _execute_one(self, step: AnyStep, si: int, st: int) -> None:
+    def _execute_one(
+        self,
+        step: AnyStep,
+        si: int,
+        st: int,
+        depth: int = 0,
+    ) -> None:
+        """
+        depth: include 嵌套深度，仅用于日志缩进。
+               0 = 最外层 routine，1+ = 通过 include 进入的子 routine。
+        """
+        indent = "  " * depth
         at = f"@{step.at_map}" if step.at_map else ""
-        _log(self.hooks, "info", f"[{si}/{st}] {step.TYPE}{at}")
+        _log(self.hooks, "info", f"{indent}[{si}/{st}] {step.TYPE}{at}")
 
         if step.at_map is not None:
             self._current_map = step.at_map
@@ -271,6 +292,7 @@ class RoutineRunner:
             "wait_pos_stable": self._do_wait_pos_stable,
             "wait_screen_stable": self._do_wait_screen_stable,
             "enter_map": self._do_enter_map,
+            "include": self._do_include,
         }
         handler = dispatch.get(step.TYPE)
         if handler is None:
@@ -409,7 +431,8 @@ class RoutineRunner:
 
     def _do_click(self, step: ClickStep) -> None:
         ui = self.movement_profile.ui
-        self.mumu.click(step.pos)
+        pos = self._resolve_click_target(step)
+        self.mumu.click(pos)
         for _ in range(step.skip):
             if ui.blank_btn is None:
                 raise ValueError("需要 skip 对话但 ui.blank_btn 未配置")
@@ -417,13 +440,40 @@ class RoutineRunner:
         if step.delay > 0:
             self._cancellable_sleep(step.delay)
 
+    def _resolve_click_target(self, step: ClickStep) -> tuple[float, float]:
+        """
+        解析 ClickStep 实际要点击的坐标:
+          - preset 为空 → 直接用 step.pos
+          - preset 是 "character_pos" → 从 MovementProfile 顶层取
+          - 其他 preset → 从 UIPositions 同名字段取，要求是单点 (x, y)
+        预设字段在 movement_profile 里没录或不是单点都直接报错。
+        """
+        if not step.preset:
+            return step.pos
+
+        name = step.preset
+        if name == "character_pos":
+            return self.movement_profile.character_pos
+
+        ui = self.movement_profile.ui
+        val = getattr(ui, name, None)
+        if val is None:
+            raise ValueError(
+                f"click 预设 {name!r} 在当前 movement_profile 里未配置；"
+                f"请去主界面「运动配置」录入"
+            )
+        if not (isinstance(val, tuple) and len(val) == 2):
+            raise ValueError(
+                f"click 预设 {name!r} 不是单点坐标 (got {val!r})；"
+                f"等距按钮组 / 商品栅格请用 button / buy 步骤"
+            )
+        return val
+
     def _do_buy(self, step: BuyStep) -> None:
         ui = self.movement_profile.ui
-        if ui.buy_item_grid is None:
-            raise ValueError(
-                "ui.buy_item_grid 未配置（运动配置里需录入商品第 1 个和第 N 个位置）"
-            )
         for required in (
+            "buy_item_start_pos",
+            "buy_item_span",
             "buy_increase_btn",
             "buy_confirm_btn",
             "buy_exit_btn",
@@ -472,3 +522,91 @@ class RoutineRunner:
         self._current_map = step.map
         # 新地图 → 上次移动记录的位置失效
         self._mover.set_current_pos(None)
+
+    def _do_include(self, step: IncludeStep) -> None:
+        """串联执行另一个 routine 文件"""
+        sub_path = self._resolve_routine_path(step.routine)
+        if not sub_path.exists():
+            raise ValueError(
+                f"include 找不到 routine 文件: {step.routine!r} "
+                f"(尝试解析为 {sub_path})"
+            )
+
+        # 防环
+        if sub_path in self._include_stack:
+            chain = " → ".join(p.name for p in self._include_stack)
+            raise RuntimeError(f"include 出现递归: {chain} → {sub_path.name}")
+
+        try:
+            sub = Routine.load(sub_path)
+        except Exception as e:
+            raise RuntimeError(
+                f"include 加载子 routine 失败 ({sub_path}): " f"{type(e).__name__}: {e}"
+            ) from e
+
+        depth = len(self._include_stack)  # 父 routine 已在栈里，所以这就是子的 depth
+        indent = "  " * depth
+        _log(
+            self.hooks,
+            "info",
+            f"{indent}↳ 进入 sub-routine [{sub.name}] "
+            f"({len(sub.steps)} 步, {sub_path.name})",
+        )
+        self._include_stack.append(sub_path)
+        try:
+            sub_total = len(sub.steps)
+            for sub_si, sub_step in enumerate(sub.steps, start=1):
+                _check_cancel(self.hooks)
+                _maybe_wait_step(self.hooks)
+                # 子 routine 不刷新顶层 progress 信号，只通过日志缩进展示
+                self._execute_one(sub_step, sub_si, sub_total, depth=depth)
+        finally:
+            self._include_stack.pop()
+            _log(
+                self.hooks,
+                "info",
+                f"{indent}↳ 退出 sub-routine [{sub.name}]",
+            )
+
+    def _resolve_routine_path(self, name: str) -> Path:
+        """
+        将 IncludeStep.routine 字段解析为实际文件路径。
+
+        优先级:
+          1. 已存在的绝对/相对路径 (按当前工作目录解析)
+          2. 与父 routine 同目录: <parent_dir>/<name>(.yaml|.yml)
+          3. config/routines/ 下: <DEFAULT>/<name>(.yaml|.yml)
+
+        全部找不到时返回 candidate 列表里最常见的猜测，让上层报错时给出明确路径。
+        """
+        p = Path(name)
+        if p.is_absolute() or p.exists():
+            return p.resolve() if p.exists() else p
+
+        parent_dir = (
+            self.routine.path.parent.resolve()
+            if self.routine.path is not None
+            else None
+        )
+        default_dir = DEFAULT_ROUTINES_DIR.resolve()
+
+        candidate_dirs: list[Path] = []
+        if parent_dir is not None:
+            candidate_dirs.append(parent_dir)
+        if default_dir not in candidate_dirs:
+            candidate_dirs.append(default_dir)
+
+        # 已带扩展名就直接试，否则补 .yaml/.yml
+        if p.suffix in (".yaml", ".yml"):
+            stems = [p.name]
+        else:
+            stems = [f"{name}.yaml", f"{name}.yml", name]
+
+        for d in candidate_dirs:
+            for s in stems:
+                c = d / s
+                if c.exists():
+                    return c.resolve()
+
+        # 都没命中：返回第一个候选位置作为"期望路径"，由上层在异常里展示
+        return candidate_dirs[0] / stems[0]

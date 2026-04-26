@@ -1,0 +1,1 @@
+from app.views.view_area_solver_dialog.window import ViewAreaSolverDialog

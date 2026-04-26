@@ -40,6 +40,7 @@ from utils import Mumu
 from app.core.profiles import (
     DEFAULT_MOVEMENT_YAML_PATH,
     BuyItemGrid,
+    ClickDelays,
     LinearButtonGroup,
     MovementProfile,
     MovementRegistry,
@@ -57,6 +58,7 @@ class EntryKind(Enum):
     RECT = "rect"  # 矩形 (x0, y0, x1, y1)
     VISION = "vision"  # VisionSpec
     CALIBRATE = "calibrate"  # 角色中心点 + 视野 block_size 联动反算
+    DELAYS = "delays"  # 各类点击延时配置
 
 
 @dataclass
@@ -176,6 +178,16 @@ class MovementProfileDialog(QDialog):
             )
         )
 
+        entries.append(
+            Entry(
+                key="map_view_area",
+                label="地图可视区域（矩形）",
+                kind=EntryKind.RECT,
+                getter=lambda: prof.map_view_area,
+                setter=lambda v: setattr(prof, "map_view_area", v),
+            )
+        )
+
         # 各视野档位
         for vname in ("小", "中", "大"):
             entries.append(
@@ -188,6 +200,17 @@ class MovementProfileDialog(QDialog):
                     sub_vision=vname,
                 )
             )
+
+        # 点击延时
+        entries.append(
+            Entry(
+                key="click_delays",
+                label="点击延时配置",
+                kind=EntryKind.DELAYS,
+                getter=lambda: prof.click_delays,
+                setter=lambda v: setattr(prof, "click_delays", v),
+            )
+        )
 
         # 角色中心点 + 视野联动反算（独立工具入口；不存独立字段）
         entries.append(
@@ -323,6 +346,8 @@ class MovementProfileDialog(QDialog):
             return self._editor_vision(entry)
         if entry.kind == EntryKind.CALIBRATE:
             return self._editor_calibrate(entry)
+        if entry.kind == EntryKind.DELAYS:
+            return self._editor_delays(entry)
         raise ValueError(f"未知 kind: {entry.kind}")
 
     def _mk_norm_spin(self, v: float) -> QDoubleSpinBox:
@@ -944,6 +969,103 @@ class MovementProfileDialog(QDialog):
 
         btn.clicked.connect(_do_calibrate)
         form.addRow("", btn)
+
+        return w
+
+    # ========================================================================
+    # 点击延时编辑器
+    # ========================================================================
+
+    def _editor_delays(self, entry: Entry) -> QWidget:
+        """
+        ClickDelays 编辑器：default 是必填的通用延时，其他分类未设值（spinbox
+        最小值「使用默认」）时回退到 default。
+        """
+        w = QWidget()
+        form = QFormLayout(w)
+        cd: ClickDelays = entry.getter()
+
+        form.addRow(f"<b>{entry.label}</b>", QLabel(""))
+        hint = QLabel(
+            "每次点击之后等待的秒数。各分类未设值（值为「使用默认」）时回退到 default。\n"
+            "数值越大游戏 UI 反应越稳定，但整体操作变慢。"
+        )
+        hint.setStyleSheet("color: #888;")
+        hint.setWordWrap(True)
+        form.addRow("", hint)
+
+        # default：必填，没有"使用默认"语义
+        default_spin = QDoubleSpinBox()
+        default_spin.setDecimals(2)
+        default_spin.setRange(0.0, 60.0)
+        default_spin.setSingleStep(0.1)
+        default_spin.setValue(cd.default)
+        form.addRow("default（通用默认）", default_spin)
+
+        # 其他分类：spinbox 拨到最小值显示"（使用默认 X.Xs）"，等价于该分类未显式设值。
+        # 第 3 项 = 该分类的"推荐默认值"（仅 travel_transition 有；其他靠 default 兜底）。
+        sub_specs = [
+            ("button", "button（场景/对话按钮）"),
+            ("blank_skip", "blank_skip（跳对话点空白）"),
+            ("buy_item", "buy_item（选商品）"),
+            ("buy_increase", "buy_increase（数量 +1）"),
+            ("buy_confirm", "buy_confirm（确认购买）"),
+            ("buy_exit", "buy_exit（退出购买）"),
+            ("click", "click（通用 click step）"),
+            ("open_package", "open_package（打开背包）"),
+            ("ticket", "ticket（背包里点票券）"),
+            ("travel_icon", "travel_icon（地图跳转-点目标图标）"),
+            ("travel_confirm", "travel_confirm（地图跳转-点确认按钮）"),
+            ("travel_transition", "travel_transition（地图跳转切图过场）"),
+            ("move_step", "move_step（move 每段 click 后等待，OCR 闭环下默认 0）"),
+        ]
+
+        sub_spins: dict[str, QDoubleSpinBox] = {}
+        for attr, label in sub_specs:
+            spin = QDoubleSpinBox()
+            spin.setDecimals(2)
+            spin.setRange(-1.0, 60.0)  # -1 触发 specialValueText
+            spin.setSingleStep(0.1)
+            # specialValueText 显示该分类未显式设值时实际生效的兜底值
+            fb = cd.fallback_for(attr)
+            if attr in ClickDelays._RECOMMENDED_DEFAULTS:
+                spin.setSpecialValueText(f"（使用推荐 {fb:.1f}s）")
+            else:
+                spin.setSpecialValueText(f"（使用默认 {fb:.2f}s）")
+            v = getattr(cd, attr)
+            spin.setValue(v if v is not None else -1.0)
+            sub_spins[attr] = spin
+            form.addRow(label, spin)
+
+        # 操作
+        row = QHBoxLayout()
+
+        btn_apply = QPushButton("应用")
+
+        def _apply():
+            new_cd = ClickDelays(default=default_spin.value())
+            for attr, spin in sub_spins.items():
+                # 拨到最小值（specialValueText 显示）= 用默认 = None
+                if spin.value() == spin.minimum():
+                    setattr(new_cd, attr, None)
+                else:
+                    setattr(new_cd, attr, spin.value())
+            entry.setter(new_cd)
+            self._reload_list()
+
+        btn_apply.clicked.connect(_apply)
+        row.addWidget(btn_apply)
+
+        btn_reset_subs = QPushButton("所有分类都用 default")
+
+        def _reset_subs():
+            for spin in sub_spins.values():
+                spin.setValue(spin.minimum())
+
+        btn_reset_subs.clicked.connect(_reset_subs)
+        row.addWidget(btn_reset_subs)
+        row.addStretch(1)
+        form.addRow("", _wrap(row))
 
         return w
 
