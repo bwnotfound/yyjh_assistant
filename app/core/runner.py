@@ -25,7 +25,7 @@ from utils import Mumu
 
 from app.core.mover import MapContext, Mover
 from app.core.ocr import CoordReader, TemplateOCR
-from app.core.profiles import MovementProfile
+from app.core.profiles import MovementConfig
 from app.core.routine import (
     AnyStep,
     ButtonStep,
@@ -145,7 +145,7 @@ class RoutineRunner:
         mumu: Mumu,
         routine: Routine,
         map_registry: MapRegistry,
-        movement_profile: MovementProfile,
+        movement_profile: MovementConfig,
         hooks: Optional[RunnerHooks] = None,
     ) -> None:
         self.mumu = mumu
@@ -154,11 +154,12 @@ class RoutineRunner:
         self.movement_profile = movement_profile
         self.hooks = hooks or RunnerHooks()
 
-        self._map_profile = map_registry.profiles.get(movement_profile.key)
+        # map_registry 仍然按分辨率分桶 (本次重构只动 movement_profile),
+        # 用 mumu 的实际分辨率拿对应的 map profile
+        device_key = f"{mumu.device_w}x{mumu.device_h}"
+        self._map_profile = map_registry.profiles.get(device_key)
         if self._map_profile is None:
-            raise ValueError(
-                f"map_registry 里没有分辨率 {movement_profile.key} 的 profile"
-            )
+            raise ValueError(f"map_registry 里没有分辨率 {device_key} 的 profile")
         self._coord = CoordSystem(self._map_profile, map_registry.constraints)
         coord_reader = self._build_coord_reader()
         self._mover = Mover(mumu, movement_profile, coord_reader=coord_reader)
@@ -246,7 +247,10 @@ class RoutineRunner:
                 if loop_total != 0 and loop_idx >= loop_total:
                     break
 
-                interval = self.routine.loop_interval
+                interval = self._resolve_delay(
+                    self.routine.loop_interval_preset,
+                    self.routine.loop_interval,
+                )
                 if interval > 0:
                     _log(self.hooks, "info", f"等待 {interval}s 后进入下一轮")
                     self._cancellable_sleep(interval)
@@ -406,8 +410,13 @@ class RoutineRunner:
         )
 
     def _do_button(self, step: ButtonStep) -> None:
+        """
+        两态执行:
+          - template 模式: 从 movement_profile.button_templates 取整套 (name+skip+delay)
+          - 直接模式:      用 step.name + step.skip + step.delay
+        """
         ui = self.movement_profile.ui
-        name = step.name.strip()
+        name, skip, delay = self._resolve_button_action(step)
         prefix, _, idx_raw = name.partition("_")
         try:
             idx = int(idx_raw)
@@ -422,58 +431,125 @@ class RoutineRunner:
             raise ValueError(f"button 前缀未知: {prefix!r}")
 
         self.mumu.click(pos)
-        for _ in range(step.skip):
+        for _ in range(skip):
             if ui.blank_btn is None:
                 raise ValueError("需要 skip 对话但 ui.blank_btn 未配置")
             self.mumu.click(ui.blank_btn, delay=0.4)
-        if step.delay > 0:
-            self._cancellable_sleep(step.delay)
+        if delay > 0:
+            self._cancellable_sleep(delay)
+
+    def _resolve_button_action(self, step: ButtonStep) -> tuple[str, int, float]:
+        """解析 ButtonStep 为 (name, skip, delay) 元组。delay 支持 delay_preset."""
+        if step.template:
+            tmpl = self.movement_profile.button_templates.get(step.template)
+            if tmpl is None:
+                raise ValueError(
+                    f"button 模板 {step.template!r} 在当前 movement_profile 里未配置；"
+                    f"请去 routine 编辑器「新建 button 模板…」录入, "
+                    f"或把这步改回直接 name 模式"
+                )
+            delay = self._resolve_delay(tmpl.delay_preset, tmpl.delay)
+            return tmpl.name, tmpl.skip, delay
+        delay = self._resolve_delay(step.delay_preset, step.delay)
+        return step.name, step.skip, delay
 
     def _do_click(self, step: ClickStep) -> None:
+        """
+        三态执行:
+          - template 模式: 从 movement_profile.click_templates 取整套 (pos+skip+delay)
+          - preset 模式:   pos 从 ui.resolve_single_point 解析, skip/delay 用 step 自己的
+          - 自定义模式:    全部用 step 字段
+        """
         ui = self.movement_profile.ui
-        pos = self._resolve_click_target(step)
+        pos, skip, delay = self._resolve_click_action(step)
         self.mumu.click(pos)
-        for _ in range(step.skip):
+        for _ in range(skip):
             if ui.blank_btn is None:
                 raise ValueError("需要 skip 对话但 ui.blank_btn 未配置")
             self.mumu.click(ui.blank_btn, delay=0.4)
-        if step.delay > 0:
-            self._cancellable_sleep(step.delay)
+        if delay > 0:
+            self._cancellable_sleep(delay)
 
-    def _resolve_click_target(self, step: ClickStep) -> tuple[float, float]:
+    def _resolve_click_action(
+        self, step: ClickStep
+    ) -> tuple[tuple[float, float], int, float]:
         """
-        解析 ClickStep 实际要点击的坐标:
-          - preset 为空 → 直接用 step.pos
-          - preset 是 "character_pos" → 从 MovementProfile 顶层取
-          - preset 在 UIPositions 内置单点字段中 → 从对应字段取
-          - preset 在 UIPositions.custom 中 → 从用户自建预设取
-          - 都查不到 → 报错指引用户去运动配置
-        """
-        if not step.preset:
-            return step.pos
+        解析 ClickStep 为 (pos, skip, delay) 元组。
 
-        name = step.preset
+        三态语义:
+          - template 不空:  整套从 movement_profile.click_templates[template] 取,
+                           step 自己的 pos / preset / skip / delay 都被忽略
+          - preset 不空:    仅 pos 从预设解析, skip/delay 走 step 字段
+          - 都为空:         全部走 step 字段
+
+        delay 解析: 任一模式下若 delay_preset 非空, 走 click_delays.resolve()
+                    否则用字面 delay。模板模式下查模板的 delay_preset/delay,
+                    非模板模式下查 step 的 delay_preset/delay。
+        """
+        if step.template:
+            tmpl = self.movement_profile.click_templates.get(step.template)
+            if tmpl is None:
+                raise ValueError(
+                    f"click 模板 {step.template!r} 在当前 movement_profile 里未配置；"
+                    f"请去 routine 编辑器「新建 click 模板…」录入, "
+                    f"或把这步改回自定义/位置预设模式"
+                )
+            # 模板的位置部分: position_preset 或 pos 二选一 (ClickTemplate
+            # __post_init__ 已校验, 这里直接信任)
+            if tmpl.position_preset:
+                pos = self._resolve_position_preset(tmpl.position_preset)
+            else:
+                pos = tmpl.pos  # type: ignore[assignment]
+            delay = self._resolve_delay(tmpl.delay_preset, tmpl.delay)
+            return pos, tmpl.skip, delay
+
+        # 非 template 模式: pos 走 _resolve_click_target (含 preset 解析),
+        # skip 直接用 step 自己的, delay 看 delay_preset
+        pos = self._resolve_click_target(step)
+        delay = self._resolve_delay(step.delay_preset, step.delay)
+        return pos, step.skip, delay
+
+    def _resolve_delay(self, preset: Optional[str], literal: float) -> float:
+        """
+        统一的 delay 解析入口:
+          - preset 非空 → 从 movement_profile.click_delays 解析
+          - 否则用字面值 literal
+        """
+        if preset:
+            return self.movement_profile.click_delays.resolve(preset)
+        return float(literal)
+
+    def _resolve_position_preset(self, name: str) -> tuple[float, float]:
+        """
+        把一个位置预设名解析为坐标。语义同 _resolve_click_target 的 preset 分支,
+        提取出来给 ClickTemplate 复用。
+        """
         if name == "character_pos":
             return self.movement_profile.character_pos
-
         ui = self.movement_profile.ui
-        # 用统一入口 resolve_single_point: 内置字段 → custom 字典
         pos = ui.resolve_single_point(name)
         if pos is not None:
             return pos
-
-        # 仍未命中: 可能是 chat_btn / table_btn 这种非单点字段被错填到 click step,
-        # 或者预设名拼写错误 / 没在 movement_profile 录入
         val = getattr(ui, name, None)
         if val is not None and not (isinstance(val, tuple) and len(val) == 2):
             raise ValueError(
-                f"click 预设 {name!r} 不是单点坐标 (got {val!r})；"
+                f"位置预设 {name!r} 不是单点坐标 (got {val!r})；"
                 f"等距按钮组 / 商品栅格请用 button / buy 步骤"
             )
         raise ValueError(
-            f"click 预设 {name!r} 在当前 movement_profile 里未配置；"
+            f"位置预设 {name!r} 在当前 movement_profile 里未配置；"
             f"请去主界面「运动配置」录入, 或在 routine 编辑器里「新建预设」"
         )
+
+    def _resolve_click_target(self, step: ClickStep) -> tuple[float, float]:
+        """
+        解析 ClickStep 实际要点击的坐标 (不含 template 模式; template 见 _resolve_click_action):
+          - preset 为空 → 直接用 step.pos
+          - preset 非空 → 走 _resolve_position_preset
+        """
+        if not step.preset:
+            return step.pos
+        return self._resolve_position_preset(step.preset)
 
     def _do_buy(self, step: BuyStep) -> None:
         ui = self.movement_profile.ui

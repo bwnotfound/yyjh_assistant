@@ -1,47 +1,45 @@
 """
 movement_profile - 运动相关的几何常量与全局 UI 位置。
 
-YAML 结构 (按可点击区域分辨率分组):
+YAML 结构 (新 schema, 自 v2 起):
+
+    schema_version: 2
+
+    # 角色在屏幕上的位置（归一化）
+    character_pos: [0.4417, 0.4944]
+
+    # 每个视野档位对应的地图格屏幕尺寸（归一化）和一次点击最大移动格数
+    vision_sizes:
+      小: {block_size: [0.0833, 0.0741], move_max_num: 8, vision_delta_limit: 8}
+      中: {block_size: [0.1052, 0.0935], move_max_num: 10, vision_delta_limit: 8}
+
+    # 全局 UI 位置（归一化）
+    ui_positions:
+      package_btn: [0.235, 0.924]
+      blank_btn:   [0.894, 0.705]
+      chat_btn:
+        first:  [0.594, 0.437]
+        second: [0.594, 0.530]
+        count:  6
+      buy_item_grid: {...}
+      custom:                                 # 用户自建位置预设
+        张三丰: [0.42, 0.58]
+
+    click_delays: {...}
+    minimap_coord_roi: [0.8963, 0.3231, 0.9401, 0.3518]
+    map_view_area: [0.05, 0.04, 0.79, 0.94]
+
+
+旧 schema (v1, 自动迁移):
 
     profiles:
       "1920x1080":
-        # 角色在屏幕上的位置（归一化）
-        character_pos: [0.4417, 0.4944]
+        character_pos: [...]
+        ...
 
-        # 每个视野档位对应的地图格屏幕尺寸（归一化）和一次点击最大移动格数
-        vision_sizes:
-          小: {block_size: [0.0833, 0.0741], move_max_num: 8, vision_delta_limit: 8}
-          中: {block_size: [0.1052, 0.0935], move_max_num: 10, vision_delta_limit: 8}
-
-        # 全局 UI 位置（归一化）
-        ui_positions:
-          package_btn: [0.235, 0.924]
-          ticket_btn:  [0.314, 0.793]
-          blank_btn:   [0.894, 0.705]
-          chat_btn:
-            first:  [0.594, 0.437]
-            second: [0.594, 0.530]
-            count:  6
-          table_btn:
-            first:  [...]
-            second: [...]
-            count:  6
-          buy_item_grid:
-            cols: 2
-            rows: 4
-            first:  [0.45, 0.30]
-            second: [0.55, 0.55]
-            second_index: 8
-          buy_increase_btn: [...]
-          buy_confirm_btn: [...]
-          buy_exit_btn: [...]
-
-        # 监视小地图坐标变动的 ROI (x0, y0, x1, y1) 归一化
-        minimap_coord_roi: [0.8963, 0.3231, 0.9401, 0.3518]
-
-        # 屏幕上"地图能完整显示的矩形"(避开周围 UI 遮挡), 归一化
-        # 用于 compute_character_screen_pos 几何算法
-        map_view_area: [0.05, 0.04, 0.79, 0.94]
+加载时若发现顶层有 'profiles' 字典, 自动展平第一份 profile 为新 schema
+(原始字典 key 如 "1920x1080" 被丢弃, 因为归一化坐标本就跨分辨率通用)。
+迁移仅在内存中, 用户下次保存才落盘为新 schema。
 """
 
 from __future__ import annotations
@@ -55,6 +53,9 @@ import yaml
 
 log = logging.getLogger(__name__)
 
+
+# 当前 schema 版本号. 写入 yaml 顶层, 用于加载时区分新旧 schema。
+SCHEMA_VERSION = 2
 
 DEFAULT_MOVEMENT_YAML_PATH = Path("config/common/movement_profile.yaml")
 
@@ -268,6 +269,10 @@ class ClickDelays:
     fly: Optional[float] = None
     fly_settle: Optional[float] = None
     move_step: Optional[float] = None
+    # 用户自建延时预设, 名字任取 (例如 "切场动画", "等NPC说话完")。
+    # 在 ClickStep / ButtonStep / ClickTemplate / ButtonTemplate / Routine.loop_interval
+    # 的 delay_preset 字段, 以及 SleepStep.preset 的下拉里都会出现.
+    custom: dict[str, float] = field(default_factory=dict)
 
     _SUB_FIELDS = (
         "button",
@@ -304,12 +309,29 @@ class ClickDelays:
     }
 
     def resolve(self, kind: str) -> float:
+        """
+        把延时分类名解析为秒数. 查找顺序:
+          1. 用户自建的 custom 字典 (优先, 这样用户用同名 key 时能 override 不到内置)
+             —— 但因为新建 custom 会校验不重名, 实际不会撞上内置字段
+          2. 内置 _SUB_FIELDS 显式设值
+          3. 推荐默认值 (_RECOMMENDED_DEFAULTS)
+          4. self.default
+        """
+        if kind in self.custom:
+            return float(self.custom[kind])
         v = getattr(self, kind, None)
         if v is not None:
             return float(v)
         if kind in self._RECOMMENDED_DEFAULTS:
             return float(self._RECOMMENDED_DEFAULTS[kind])
         return float(self.default)
+
+    def all_preset_names(self) -> list[str]:
+        """
+        返回所有可被 SleepStep.preset / ClickStep.delay_preset 等引用的预设名,
+        按推荐顺序排列: 内置 16 个 + custom (按名字字母序).
+        """
+        return [*self._SUB_FIELDS, *sorted(self.custom.keys())]
 
     def fallback_for(self, kind: str) -> float:
         if kind in self._RECOMMENDED_DEFAULTS:
@@ -322,6 +344,8 @@ class ClickDelays:
             v = getattr(self, name)
             if v is not None:
                 d[name] = float(v)
+        if self.custom:
+            d["custom"] = {k: float(v) for k, v in self.custom.items()}
         return d
 
     @classmethod
@@ -332,7 +356,138 @@ class ClickDelays:
         for name in cls._SUB_FIELDS:
             if name in d and d[name] is not None:
                 setattr(out, name, float(d[name]))
+        custom_raw = d.get("custom") or {}
+        if isinstance(custom_raw, dict):
+            for k, v in custom_raw.items():
+                if v is None:
+                    continue
+                try:
+                    out.custom[str(k)] = float(v)
+                except (TypeError, ValueError):
+                    log.warning("click_delays.custom[%r] 非数值, 跳过: %r", k, v)
         return out
+
+
+# =============================================================================
+# ClickTemplate: 整体 click 行为模板
+# =============================================================================
+
+
+@dataclass
+class ClickTemplate:
+    """
+    一个完整的 click 行为打包 (位置 + skip + delay)。
+    通过 MovementConfig.click_templates 全局共享, ClickStep 用 template 名引用。
+
+    位置模式 (二选一, __post_init__ 校验):
+      - position_preset: 引用 ui 中的位置预设 (内置/自建/character_pos)
+                         运行时动态解析, 改预设位置全局生效
+      - pos: 字面坐标, 不依赖任何预设
+
+    skip / delay: 与 ClickStep 同义, 模板被引用时它们覆盖 step 自己的同名字段。
+    """
+
+    position_preset: Optional[str] = None
+    pos: Optional[tuple[float, float]] = None
+    skip: int = 0
+    delay: float = 0.0
+    delay_preset: Optional[str] = None  # ClickDelays 字段名 / custom 名 (与 delay 互斥)
+
+    def __post_init__(self) -> None:
+        if self.position_preset is None and self.pos is None:
+            raise ValueError("ClickTemplate 必须指定 position_preset 或 pos 之一")
+        if self.position_preset is not None and self.pos is not None:
+            raise ValueError(
+                "ClickTemplate 的 position_preset 和 pos 互斥, 不能同时设置"
+            )
+        if self.delay and self.delay_preset:
+            raise ValueError(
+                f"ClickTemplate 的 delay ({self.delay}) 和 delay_preset "
+                f"({self.delay_preset!r}) 互斥, 不能同时设置"
+            )
+
+    def to_dict(self) -> dict:
+        d: dict = {}
+        if self.position_preset is not None:
+            d["position_preset"] = self.position_preset
+        if self.pos is not None:
+            d["pos"] = list(self.pos)
+        if self.skip:
+            d["skip"] = int(self.skip)
+        if self.delay_preset:
+            d["delay_preset"] = self.delay_preset
+        elif self.delay:
+            d["delay"] = float(self.delay)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ClickTemplate":
+        pos_raw = d.get("pos")
+        pos = None
+        if pos_raw is not None:
+            if not (isinstance(pos_raw, (list, tuple)) and len(pos_raw) == 2):
+                raise ValueError(f"ClickTemplate pos 应为 [x, y], 实际: {pos_raw!r}")
+            pos = (float(pos_raw[0]), float(pos_raw[1]))
+        return cls(
+            position_preset=d.get("position_preset"),
+            pos=pos,
+            skip=int(d.get("skip", 0)),
+            delay=float(d.get("delay", 0.0)),
+            delay_preset=d.get("delay_preset"),
+        )
+
+
+# =============================================================================
+# ButtonTemplate: 整体 button 行为模板
+# =============================================================================
+
+
+@dataclass
+class ButtonTemplate:
+    """
+    一个完整的 button 行为打包 (按钮名 + skip + delay)。
+    通过 MovementConfig.button_templates 全局共享, ButtonStep 用 template 名引用。
+
+    字段:
+      - name:  必填, chat_N / table_N 形式 (与 ButtonStep.name 同义)
+      - skip / delay: 与 ButtonStep 同义, 模板被引用时它们覆盖 step 自己的同名字段。
+    """
+
+    name: str = ""
+    skip: int = 0
+    delay: float = 0.0
+    delay_preset: Optional[str] = None  # ClickDelays 字段名 / custom 名
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("ButtonTemplate.name 不能为空")
+        if self.delay and self.delay_preset:
+            raise ValueError(
+                f"ButtonTemplate 的 delay ({self.delay}) 和 delay_preset "
+                f"({self.delay_preset!r}) 互斥"
+            )
+
+    def to_dict(self) -> dict:
+        d: dict = {"name": self.name}
+        if self.skip:
+            d["skip"] = int(self.skip)
+        if self.delay_preset:
+            d["delay_preset"] = self.delay_preset
+        elif self.delay:
+            d["delay"] = float(self.delay)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ButtonTemplate":
+        name = d.get("name", "")
+        if not name:
+            raise ValueError(f"ButtonTemplate from_dict 缺少 name: {d!r}")
+        return cls(
+            name=str(name),
+            skip=int(d.get("skip", 0)),
+            delay=float(d.get("delay", 0.0)),
+            delay_preset=d.get("delay_preset"),
+        )
 
 
 def _load_button_group(
@@ -513,10 +668,15 @@ class UIPositions:
 
 
 @dataclass
-class MovementProfile:
-    """一个分辨率下的完整运动配置"""
+class MovementConfig:
+    """
+    全局运动配置 (单一对象, 无分辨率分桶).
 
-    resolution: tuple[int, int]
+    历史: 此类原名 MovementProfile, yaml 中按 "1920x1080" 分桶存储.
+    自 schema v2 起合并为单一对象 - 所有字段都是归一化坐标/比例,
+    跨分辨率通用, 无需多份。
+    """
+
     character_pos: tuple[float, float] = (0.4417, 0.4944)
     vision_sizes: dict[str, VisionSpec] = field(default_factory=dict)
     ui: UIPositions = field(default_factory=UIPositions)
@@ -526,10 +686,16 @@ class MovementProfile:
     # 配置后启用 compute_character_screen_pos 几何算法做贴边修正；
     # 留空则各调用方按各自的回退策略 (旧经验算法 / 不做贴边修正)。
     map_view_area: Optional[tuple[float, float, float, float]] = None
+    # click 模板 (整体 click 行为打包: 位置+skip+delay), 跨 routine 全局共享。
+    # ClickStep.template 通过名字引用; 改模板 → 所有引用它的 step 立即生效。
+    click_templates: dict[str, ClickTemplate] = field(default_factory=dict)
+    # button 模板 (整体 button 行为打包: name+skip+delay), 跨 routine 全局共享。
+    # ButtonStep.template 通过名字引用; 改模板 → 所有引用它的 step 立即生效。
+    button_templates: dict[str, ButtonTemplate] = field(default_factory=dict)
 
-    @property
-    def key(self) -> str:
-        return f"{self.resolution[0]}x{self.resolution[1]}"
+    # 加载时记录的源文件路径, 给 save() 当默认值。
+    # 不进 to_dict / from_dict, 也不参与 dataclass 比较。
+    _path: Optional[Path] = field(default=None, repr=False, compare=False)
 
     def vision(self, name: str) -> VisionSpec:
         if name not in self.vision_sizes:
@@ -539,7 +705,9 @@ class MovementProfile:
         return self.vision_sizes[name]
 
     def to_dict(self) -> dict:
+        """序列化为新 schema (v2). 顶层平铺, 不再有 'profiles' 分桶."""
         d: dict = {
+            "schema_version": SCHEMA_VERSION,
             "character_pos": list(self.character_pos),
             "vision_sizes": {
                 name: v.to_dict() for name, v in self.vision_sizes.items()
@@ -551,11 +719,21 @@ class MovementProfile:
             d["minimap_coord_roi"] = list(self.minimap_coord_roi)
         if self.map_view_area is not None:
             d["map_view_area"] = list(self.map_view_area)
+        if self.click_templates:
+            d["click_templates"] = {
+                name: t.to_dict() for name, t in self.click_templates.items()
+            }
+        if self.button_templates:
+            d["button_templates"] = {
+                name: t.to_dict() for name, t in self.button_templates.items()
+            }
         return d
 
     @classmethod
-    def from_dict(cls, key: str, d: dict) -> "MovementProfile":
-        w_str, h_str = key.split("x")
+    def from_dict(cls, d: dict) -> "MovementConfig":
+        """
+        从一个"已经展平"的 dict 构造. 对于旧 schema 走 load() 预先展平再调本方法。
+        """
         char_pos = tuple(d.get("character_pos", [0.4417, 0.4944]))
         vs_raw = d.get("vision_sizes") or {}
         visions = {name: VisionSpec.from_dict(v) for name, v in vs_raw.items()}
@@ -563,15 +741,97 @@ class MovementProfile:
         click_delays = ClickDelays.from_dict(d.get("click_delays"))
         roi = d.get("minimap_coord_roi")
         view = d.get("map_view_area")
+        templates_raw = d.get("click_templates") or {}
+        templates: dict[str, ClickTemplate] = {}
+        for name, t_dict in templates_raw.items():
+            try:
+                templates[str(name)] = ClickTemplate.from_dict(t_dict)
+            except Exception as e:
+                log.warning("click_templates[%r] 加载失败 (跳过): %s", name, e)
+        button_templates_raw = d.get("button_templates") or {}
+        button_templates: dict[str, ButtonTemplate] = {}
+        for name, t_dict in button_templates_raw.items():
+            try:
+                button_templates[str(name)] = ButtonTemplate.from_dict(t_dict)
+            except Exception as e:
+                log.warning("button_templates[%r] 加载失败 (跳过): %s", name, e)
         return cls(
-            resolution=(int(w_str), int(h_str)),
             character_pos=char_pos,
             vision_sizes=visions,
             ui=ui,
             click_delays=click_delays,
             minimap_coord_roi=(tuple(roi) if roi else None),
             map_view_area=(tuple(view) if view else None),
+            click_templates=templates,
+            button_templates=button_templates,
         )
+
+    # ---- I/O 入口 (替换原 MovementRegistry.load / .save) ----
+
+    @classmethod
+    def load(cls, path: Path = DEFAULT_MOVEMENT_YAML_PATH) -> "MovementConfig":
+        """
+        从 yaml 加载. 自动识别 schema:
+          - 新 (v2): 顶层是字段 dict (有 schema_version 或 character_pos 等)
+          - 旧 (v1): 顶层有 'profiles' 字典, 取第一份展平 (其余丢弃)
+          - 文件不存在: 返回默认配置 (但 _path 仍指向期望路径)
+        """
+        if not path.exists():
+            log.info("movement_profile 不存在，使用默认配置: %s", path)
+            cfg = cls()
+            cfg._path = path
+            return cfg
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+        if "profiles" in data:
+            # 旧 schema (v1): 按分辨率分桶
+            profiles_raw = data["profiles"] or {}
+            if not profiles_raw:
+                log.warning("旧 schema 但 profiles 为空, 使用默认配置")
+                cfg = cls()
+            else:
+                # 取第一份 profile - 业务上 routine 项目通常只有一份配置
+                first_key = next(iter(profiles_raw))
+                if len(profiles_raw) > 1:
+                    log.warning(
+                        "旧 schema 检测到多份 profile (%s), "
+                        "迁移仅保留第一份 %r, 其余丢弃",
+                        list(profiles_raw),
+                        first_key,
+                    )
+                else:
+                    log.info(
+                        "旧 schema 自动迁移: 从 profiles[%r] 展平到 v2 schema",
+                        first_key,
+                    )
+                cfg = cls.from_dict(profiles_raw[first_key])
+        else:
+            # 新 schema (v2 或缺 schema_version 但顶层是字段): 直接读
+            cfg = cls.from_dict(data)
+        cfg._path = path
+        return cfg
+
+    def save(self, path: Optional[Path] = None) -> Path:
+        """保存到 yaml. 不传 path 用加载时的 path."""
+        target = Path(path) if path else (self._path or DEFAULT_MOVEMENT_YAML_PATH)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            yaml.safe_dump(
+                self.to_dict(),
+                allow_unicode=True,
+                sort_keys=False,
+                indent=2,
+                default_flow_style=None,
+            ),
+            encoding="utf-8",
+        )
+        self._path = target
+        log.info("movement_profile 已保存: %s", target)
+        return target
+
+
+# 旧名兼容 alias: 老代码里 import MovementProfile 仍可工作
+MovementProfile = MovementConfig
 
 
 # =============================================================================
@@ -1111,67 +1371,3 @@ def solve_map_size_observation(
 
     out.direction = "+".join(direction_parts) if direction_parts else "none"
     return out
-
-
-# =============================================================================
-# Registry
-# =============================================================================
-
-
-@dataclass
-class MovementRegistry:
-    """对应整份 yaml 的顶层数据"""
-
-    profiles: dict[str, MovementProfile] = field(default_factory=dict)
-    path: Optional[Path] = None
-
-    @classmethod
-    def load(cls, path: Path = DEFAULT_MOVEMENT_YAML_PATH) -> "MovementRegistry":
-        if not path.exists():
-            log.info("movement_profile 不存在，新建空 registry: %s", path)
-            return cls(path=path)
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        profiles_raw = data.get("profiles") or {}
-        profiles = {
-            key: MovementProfile.from_dict(key, pd) for key, pd in profiles_raw.items()
-        }
-        return cls(profiles=profiles, path=path)
-
-    def save(self, path: Optional[Path | str] = None) -> Path:
-        target = Path(path) if path else (self.path or DEFAULT_MOVEMENT_YAML_PATH)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"profiles": {key: p.to_dict() for key, p in self.profiles.items()}}
-        target.write_text(
-            yaml.safe_dump(
-                payload,
-                allow_unicode=True,
-                sort_keys=False,
-                indent=2,
-                default_flow_style=None,
-            ),
-            encoding="utf-8",
-        )
-        self.path = target
-        log.info("movement_profile 已保存: %s", target)
-        return target
-
-    def ensure_profile(self, resolution: tuple[int, int]) -> MovementProfile:
-        key = f"{resolution[0]}x{resolution[1]}"
-        if key not in self.profiles:
-            log.info("为分辨率 %s 新建 MovementProfile", key)
-            self.profiles[key] = MovementProfile(
-                resolution=resolution,
-                vision_sizes={
-                    "小": VisionSpec(
-                        block_size=(160 / 1920, 80 / 1080),
-                        move_max_num=8,
-                        vision_delta_limit=8,
-                    ),
-                    "中": VisionSpec(
-                        block_size=(202 / 1920, 101 / 1080),
-                        move_max_num=10,
-                        vision_delta_limit=8,
-                    ),
-                },
-            )
-        return self.profiles[key]

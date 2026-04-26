@@ -93,25 +93,58 @@ class MoveStep(Step):
 @dataclass
 class ButtonStep(Step):
     """
-    点击菜单按钮。`name` 语法:
+    点击菜单按钮。两种模式 (name 与 template 互斥, 必有其一):
+      - 直接指定: name = "chat_N" / "table_N", 用 step 自己的 skip/delay
+      - 模板模式: template = "进入小屋" 等, 整套 (name+skip+delay) 由
+                  movement_profile.button_templates[name] 提供, step 自己的
+                  name/skip/delay 在运行时被忽略 (但仍持久化以便切回时兜底;
+                  to_dict 在 template 模式下只写 type/at_map/template, 避免歧义)
+
+    delay 字段两种模式 (delay_preset 与 delay 互斥):
+      - 字面值: delay_preset = None, 用 delay (float)
+      - 预设:   delay_preset = "click" / "切场动画" / ..., 运行时从
+                movement_profile.click_delays.resolve() 解析为秒数
+
+    name 语法:
       - "table_N" -> ui.table_btn_pos_list[N-1]
       - "chat_N"  -> ui.chat_btn_pos_list[N-1]
     """
 
     name: str = ""
+    template: Optional[str] = None
     skip: int = 0  # 按完后再点 skip 次 blank 按钮跳过对话
-    delay: float = 0.0  # 整个动作完成后的等待秒数
+    delay: float = 0.0  # 整个动作完成后的等待秒数 (delay_preset 空时使用)
+    delay_preset: Optional[str] = None  # ClickDelays 字段名 / custom 名
 
     def __post_init__(self) -> None:
         self.TYPE = "button"
-        if not self.name:
-            raise ValueError("button 步骤必须指定 name")
+        if self.name and self.template:
+            raise ValueError(
+                f"button 步骤的 name ({self.name!r}) 和 template "
+                f"({self.template!r}) 互斥, 不能同时指定"
+            )
+        if not self.name and not self.template:
+            raise ValueError("button 步骤必须指定 name 或 template 之一")
+        if self.delay and self.delay_preset:
+            raise ValueError(
+                f"button 步骤的 delay ({self.delay}) 和 delay_preset "
+                f"({self.delay_preset!r}) 互斥, 不能同时指定"
+            )
 
     def to_dict(self) -> dict:
+        # template 模式: 整个 button 行为由模板决定, step 自己的 name/skip/delay
+        # 都被忽略, 所以 yaml 里只写 type/at_map/template, 避免歧义
+        if self.template:
+            d = super().to_dict()
+            d["template"] = self.template
+            return d
+        # 非 template 模式: 像以前一样
         d = {**super().to_dict(), "name": self.name}
         if self.skip:
             d["skip"] = self.skip
-        if self.delay:
+        if self.delay_preset:
+            d["delay_preset"] = self.delay_preset
+        elif self.delay:
             d["delay"] = self.delay
         return d
 
@@ -121,28 +154,54 @@ class ClickStep(Step):
     """
     在归一化坐标处点击。
 
-    两种模式:
-      - 自定义: preset = None, 用 pos = (x, y)
-      - 预设:   preset = "blank_btn" / "package_btn" / ... ,
-                运行时由 movement_profile 解析为坐标，pos 字段被忽略
-                (但仍持久化以方便阅读和切回自定义时兜底)
+    三种模式 (preset / template 互斥, 都不填则用 pos):
+      - 自定义:    preset=None, template=None, 用 pos = (x, y) + 自己的 skip/delay
+      - 位置预设:  preset="blank_btn" / 自建预设, 仅位置由预设解析,
+                   skip / delay 仍走 ClickStep 自己的字段
+      - click 模板: template="跳3次对话" 等, 整个 click 行为 (位置+skip+delay)
+                   全部由 movement_profile.click_templates[name] 提供,
+                   ClickStep 自己的 pos / preset / skip / delay 在运行时被忽略
+                   (但仍持久化以便切回时兜底; to_dict 在 template 模式下只
+                   写出 type/at_map/template, 避免 yaml 里出现冗余字段)
 
-    合法 preset 名见 CLICK_PRESETS。
+    合法 preset 名见 CLICK_PRESETS;
+    合法 template 名取决于 movement_profile.click_templates 的 key。
     """
 
     pos: tuple[float, float] = (0.0, 0.0)
     preset: Optional[str] = None
+    template: Optional[str] = None
     delay: float = 0.0
+    delay_preset: Optional[str] = None  # ClickDelays 字段名 / custom 名
     skip: int = 0  # 点完后再点 skip 次 blank
 
     def __post_init__(self) -> None:
         self.TYPE = "click"
+        if self.preset and self.template:
+            raise ValueError(
+                f"click 步骤的 preset ({self.preset!r}) 和 template "
+                f"({self.template!r}) 互斥, 不能同时指定"
+            )
+        if self.delay and self.delay_preset:
+            raise ValueError(
+                f"click 步骤的 delay ({self.delay}) 和 delay_preset "
+                f"({self.delay_preset!r}) 互斥, 不能同时指定"
+            )
 
     def to_dict(self) -> dict:
+        # template 模式: 整个 click 行为由模板决定, step 自己的 pos/preset/skip/delay
+        # 都被忽略, 所以 yaml 里只写 type/at_map/template, 避免歧义
+        if self.template:
+            d = super().to_dict()
+            d["template"] = self.template
+            return d
+        # 非 template 模式: 像以前一样
         d = {**super().to_dict(), "pos": list(self.pos)}
         if self.preset:
             d["preset"] = self.preset
-        if self.delay:
+        if self.delay_preset:
+            d["delay_preset"] = self.delay_preset
+        elif self.delay:
             d["delay"] = self.delay
         if self.skip:
             d["skip"] = self.skip
@@ -188,11 +247,14 @@ class SleepStep(Step):
     """
     定时等待。两种模式:
       - 自定义: preset = None, 用 seconds 字段
-      - 预设:   preset = ClickDelays 字段名, 运行时由 movement_profile.click_delays.resolve()
-                动态解析为秒数 (这样多个 routine 共享同一份延时配置, 改一处全局生效)。
+      - 预设:   preset = ClickDelays 字段名 (内置 16 个 + custom), 运行时由
+                movement_profile.click_delays.resolve() 动态解析为秒数。
                 seconds 字段在 preset 模式下被忽略, 但仍持久化以便切回自定义时兜底。
 
-    合法 preset 名见 SLEEP_PRESETS。
+    preset 名的合法性在 dataclass 层不强校验 — 因为 ClickDelays.custom 可以
+    包含任意自建预设, 加载时未必能拿到 movement_profile 引用。具体合法性由
+    routine 编辑器的保存校验和 runner 的 resolve 处理 (resolve 找不到时回退
+    到 click_delays.default)。
     """
 
     seconds: float = 0.0
@@ -200,11 +262,6 @@ class SleepStep(Step):
 
     def __post_init__(self) -> None:
         self.TYPE = "sleep"
-        if self.preset is not None and self.preset not in SLEEP_PRESET_NAMES:
-            raise ValueError(
-                f"sleep 步骤 preset {self.preset!r} 非法; "
-                f"合法值: {sorted(SLEEP_PRESET_NAMES)}"
-            )
 
     def to_dict(self) -> dict:
         d = {**super().to_dict(), "seconds": self.seconds}
@@ -384,18 +441,29 @@ class Routine:
     steps: list[AnyStep] = field(default_factory=list)
     description: str = ""
     loop_count: int = 1  # 0 = 无限
-    loop_interval: float = 0.0  # 每轮之间秒数
+    loop_interval: float = 0.0  # 每轮之间秒数 (loop_interval_preset 空时使用)
+    loop_interval_preset: Optional[str] = None  # ClickDelays 字段名 / custom 名
     # 起始地图: travel 步骤计算相机位置需要知道"当前在哪张地图"。
     # 若 routine 第一步就是 travel，必须设置此字段；否则可由首次 move 的 at_map 隐式推出。
     starting_map: Optional[str] = None
     path: Optional[Path] = None
+
+    def __post_init__(self) -> None:
+        if self.loop_interval and self.loop_interval_preset:
+            raise ValueError(
+                f"Routine 的 loop_interval ({self.loop_interval}) 和 "
+                f"loop_interval_preset ({self.loop_interval_preset!r}) 互斥"
+            )
 
     def to_dict(self) -> dict:
         d: dict = {"name": self.name}
         if self.description:
             d["description"] = self.description
         d["loop_count"] = self.loop_count
-        d["loop_interval"] = self.loop_interval
+        if self.loop_interval_preset:
+            d["loop_interval_preset"] = self.loop_interval_preset
+        else:
+            d["loop_interval"] = self.loop_interval
         if self.starting_map is not None:
             d["starting_map"] = self.starting_map
         d["steps"] = [s.to_dict() for s in self.steps]
@@ -410,6 +478,7 @@ class Routine:
             description=d.get("description", ""),
             loop_count=int(d.get("loop_count", 1)),
             loop_interval=float(d.get("loop_interval", 0.0)),
+            loop_interval_preset=d.get("loop_interval_preset"),
             starting_map=d.get("starting_map"),
             steps=steps,
             path=path,

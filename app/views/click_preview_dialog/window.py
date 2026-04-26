@@ -58,8 +58,7 @@ from utils import Mumu
 from app.core.ocr import CoordReader, TemplateOCR
 from app.core.profiles import (
     DEFAULT_MOVEMENT_YAML_PATH,
-    MovementProfile,
-    MovementRegistry,
+    MovementConfig,
     VisionSpec,
     compute_character_screen_pos,
 )
@@ -83,7 +82,7 @@ class ClickPreviewDialog(QDialog):
         self.resize(600, 540)
 
         self._mumu = mumu
-        self._movement_profile: Optional[MovementProfile] = None
+        self._movement_profile: Optional[MovementConfig] = None
         self._map_profile: Optional[MapProfile] = None
         self._load_profiles()
 
@@ -104,12 +103,13 @@ class ClickPreviewDialog(QDialog):
     # =========================================================================
 
     def _load_profiles(self) -> None:
-        key = f"{self._mumu.device_w}x{self._mumu.device_h}"
+        # MovementConfig 不再按分辨率分桶, 直接 load 即可
         try:
-            mov_reg = MovementRegistry.load(DEFAULT_MOVEMENT_YAML_PATH)
-            self._movement_profile = mov_reg.profiles.get(key)
+            self._movement_profile = MovementConfig.load(DEFAULT_MOVEMENT_YAML_PATH)
         except Exception as e:
             log.warning("加载 movement_profile 失败: %s", e)
+        # map_registry 仍按分辨率分桶
+        key = f"{self._mumu.device_w}x{self._mumu.device_h}"
         try:
             map_reg = MapRegistry.load(MAP_REGISTRY_PATH)
             self._map_profile = map_reg.profiles.get(key)

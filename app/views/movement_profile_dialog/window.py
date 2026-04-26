@@ -42,8 +42,7 @@ from app.core.profiles import (
     BuyItemGrid,
     ClickDelays,
     LinearButtonGroup,
-    MovementProfile,
-    MovementRegistry,
+    MovementConfig,
     VisionSpec,
 )
 from app.views.position_picker import PositionPickerDialog
@@ -86,10 +85,10 @@ class MovementProfileDialog(QDialog):
 
         self._mumu = mumu
         self._yaml_path = yaml_path
-        self._registry: MovementRegistry = MovementRegistry.load(yaml_path)
-        self._profile: MovementProfile = self._registry.ensure_profile(
-            (mumu.device_w, mumu.device_h)
-        )
+        self._config: MovementConfig = MovementConfig.load(yaml_path)
+        # 保留 _profile 名作为别名以减少下方代码改动量;
+        # 语义上现在它就是全局配置, 不再"按分辨率挑出来一份"
+        self._profile: MovementConfig = self._config
 
         self._entries: list[Entry] = self._build_entries()
         self._build_ui()
@@ -270,7 +269,11 @@ class MovementProfileDialog(QDialog):
         root.setSpacing(8)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel(f"当前分辨率: {self._profile.key}"))
+        # 重构后 MovementConfig 不再按分辨率分桶, 不再有 .key 字段。
+        # 显示设备分辨率 (从 mumu 读) + 配置文件路径作为参考。
+        device_str = f"{self._mumu.device_w}x{self._mumu.device_h}"
+        path_str = str(self._profile._path) if self._profile._path else "(未保存)"
+        top.addWidget(QLabel(f"设备分辨率: {device_str}    配置文件: {path_str}"))
         top.addStretch(1)
         root.addLayout(top)
 
@@ -1066,6 +1069,13 @@ class MovementProfileDialog(QDialog):
             sub_spins[attr] = spin
             form.addRow(label, spin)
 
+        # custom 自建预设的状态显示 (只读) — 真正的增删改在 routine 编辑器侧
+        # (DelayInput 的「+ 管理」按钮)
+        custom_label = QLabel(self._format_custom_summary(cd))
+        custom_label.setStyleSheet("color: #4a4a4a; font-size: 11px;")
+        custom_label.setWordWrap(True)
+        form.addRow("custom 自建延时:", custom_label)
+
         # 操作
         row = QHBoxLayout()
 
@@ -1079,6 +1089,8 @@ class MovementProfileDialog(QDialog):
                     setattr(new_cd, attr, None)
                 else:
                     setattr(new_cd, attr, spin.value())
+            # 关键: 保留原 cd.custom (用户自建预设, 不属于此面板管辖)
+            new_cd.custom = dict(cd.custom)
             entry.setter(new_cd)
             self._reload_list()
 
@@ -1098,6 +1110,17 @@ class MovementProfileDialog(QDialog):
 
         return w
 
+    @staticmethod
+    def _format_custom_summary(cd: ClickDelays) -> str:
+        """显示 ClickDelays.custom 概览(只读)。在 routine 编辑器里增删改。"""
+        if not cd.custom:
+            return (
+                "(空) — 自建延时预设可在 routine 编辑器里编辑 step 的 delay "
+                "字段时通过「管理」按钮新建。"
+            )
+        items = ", ".join(f"{k}={v:.2f}s" for k, v in sorted(cd.custom.items()))
+        return f"{len(cd.custom)} 项: {items}"
+
     def _pick_points(self, n: int, labels: list[str]):
         dlg = PositionPickerDialog(
             self._mumu,
@@ -1116,7 +1139,7 @@ class MovementProfileDialog(QDialog):
 
     def _on_save(self) -> None:
         try:
-            path = self._registry.save(self._yaml_path)
+            path = self._config.save(self._yaml_path)
         except Exception as e:
             log.exception("保存 movement_profile 失败")
             QMessageBox.critical(self, "保存失败", f"{type(e).__name__}: {e}")
@@ -1129,10 +1152,8 @@ class MovementProfileDialog(QDialog):
             != QMessageBox.Yes
         ):
             return
-        self._registry = MovementRegistry.load(self._yaml_path)
-        self._profile = self._registry.ensure_profile(
-            (self._mumu.device_w, self._mumu.device_h)
-        )
+        self._config = MovementConfig.load(self._yaml_path)
+        self._profile = self._config
         self._entries = self._build_entries()
         self._reload_list()
 

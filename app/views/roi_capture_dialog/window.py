@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 
 from utils import Mumu
 
-from app.core.profiles import MovementRegistry
+from app.core.profiles import MovementConfig
 from app.views.position_picker import PositionPickerDialog
 from app.views.roi_capture_dialog.crop_widget import CropWidget
 
@@ -547,12 +547,11 @@ class RoiCaptureDialog(QDialog):
         if not spec.sync_target:
             return None
         try:
-            reg = MovementRegistry.load()
-            profile = reg.ensure_profile((self._mumu.device_w, self._mumu.device_h))
-            old = getattr(profile, spec.sync_target, None)
+            cfg = MovementConfig.load()
+            old = getattr(cfg, spec.sync_target, None)
             new_val = tuple(rect_norm)
-            setattr(profile, spec.sync_target, new_val)
-            path = reg.save()
+            setattr(cfg, spec.sync_target, new_val)
+            path = cfg.save()
         except Exception as e:
             log.exception("同步 movement_profile 失败")
             return f"⚠ 同步失败: {type(e).__name__}: {e}"

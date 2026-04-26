@@ -40,8 +40,7 @@ from utils import Mumu
 
 from app.core.profiles import (
     DEFAULT_MOVEMENT_YAML_PATH,
-    MovementProfile,
-    MovementRegistry,
+    MovementConfig,
 )
 from app.views.map_size_solver_dialog import MapSizeSolverDialog
 from config.common.map_registry import (
@@ -622,26 +621,15 @@ class MapRegistryDialog(QDialog):
             )
             return
 
-        # 加载运动配置
+        # 加载运动配置 (单一对象, 不再按分辨率分桶)
         try:
-            mov_reg = MovementRegistry.load(DEFAULT_MOVEMENT_YAML_PATH)
+            mp = MovementConfig.load(DEFAULT_MOVEMENT_YAML_PATH)
         except Exception as e:
             log.exception("加载 movement_profile 失败")
             QMessageBox.critical(
                 self,
                 "运动配置加载失败",
                 f"读取 {DEFAULT_MOVEMENT_YAML_PATH} 失败:\n{type(e).__name__}: {e}",
-            )
-            return
-
-        key = f"{self._mumu.device_w}x{self._mumu.device_h}"
-        mp: Optional[MovementProfile] = mov_reg.profiles.get(key)
-        if mp is None:
-            QMessageBox.warning(
-                self,
-                "运动配置缺失",
-                f"未找到分辨率 {key} 的运动配置.\n"
-                f"请先在主界面「运动配置」里录入 character_pos / view_area / 视野档位.",
             )
             return
 

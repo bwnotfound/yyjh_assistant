@@ -63,7 +63,7 @@ from utils import Mumu
 
 from app.core.profiles import (
     DEFAULT_MOVEMENT_YAML_PATH,
-    MovementRegistry,
+    MovementConfig,
 )
 from app.core.routine import DEFAULT_ROUTINES_DIR, Routine, list_routines
 from app.core.runner import RoutineCancelled, RoutineRunner, RunnerHooks
@@ -138,14 +138,14 @@ class _RunnerWorker(QObject):
         mumu: Mumu,
         routine: Routine,
         map_registry: MapRegistry,
-        movement_registry: MovementRegistry,
+        movement_config: MovementConfig,
         step_mode: bool,
     ) -> None:
         super().__init__()
         self.mumu = mumu
         self.routine = routine
         self.map_registry = map_registry
-        self.movement_registry = movement_registry
+        self.movement_config = movement_config
         self.step_mode = step_mode
 
         self.signals = _RunnerSignals()
@@ -195,28 +195,10 @@ class _RunnerWorker(QObject):
             lg.setLevel(original)
 
     def run(self) -> None:
-        profile_key = f"{self.mumu.device_w}x{self.mumu.device_h}"
-        had_profile = profile_key in self.movement_registry.profiles
-        # ensure_profile: 没有就按默认常量创建一个，让 routine 里不依赖运动细节的
-        # 步骤（sleep / click / wait_*）仍能跑起来；真正用到的字段（ui.xxx / vision）
-        # 在具体 handler 里会各自报缺配置。
-        mp = self.movement_registry.ensure_profile(
-            (self.mumu.device_w, self.mumu.device_h)
-        )
-        if not had_profile:
-            # 刚创建出来的默认 profile 写回磁盘，避免下次启动又走这个分支
-            try:
-                self.movement_registry.save()
-                self.signals.log.emit(
-                    "INFO",
-                    f"分辨率 {profile_key} 的 movement_profile 不存在，已按默认值创建并保存",
-                )
-            except Exception as e:
-                log.exception("保存新建 movement_profile 失败")
-                self.signals.log.emit(
-                    "WARNING",
-                    f"新建 movement_profile 但保存失败: {type(e).__name__}: {e}",
-                )
+        # MovementConfig 在新 schema 下是单一对象, 加载时若文件缺失会返回带默认值的实例。
+        # 这里直接用主线程传进来的 movement_config 即可, 不需要再 ensure 或落盘。
+        # (旧代码这里要按当前分辨率 ensure_profile + save, 因为 yaml 是按分辨率分桶的)
+        mp = self.movement_config
 
         hooks = RunnerHooks(
             on_log=lambda lvl, msg: self.signals.log.emit(lvl, msg),
@@ -523,10 +505,10 @@ class RoutineRunnerDialog(QDialog):
         self._routine.loop_interval = self._loop_interval.value()
         step_mode = self._mode_combo.currentIndex() == 1
 
-        # 加载两个 registry
+        # 加载两个 registry / config
         try:
             map_reg = MapRegistry.load(MAP_REGISTRY_PATH)
-            mov_reg = MovementRegistry.load(DEFAULT_MOVEMENT_YAML_PATH)
+            mov_cfg = MovementConfig.load(DEFAULT_MOVEMENT_YAML_PATH)
         except Exception as e:
             QMessageBox.critical(self, "加载配置失败", f"{type(e).__name__}: {e}")
             return
@@ -538,7 +520,7 @@ class RoutineRunnerDialog(QDialog):
 
         self._thread = QThread(self)
         self._worker = _RunnerWorker(
-            self._mumu, self._routine, map_reg, mov_reg, step_mode
+            self._mumu, self._routine, map_reg, mov_cfg, step_mode
         )
         self._worker.moveToThread(self._thread)
         self._worker.signals.log.connect(self._on_runner_log, Qt.QueuedConnection)
@@ -762,11 +744,22 @@ def _describe_step(s) -> str:
             return f"move {p}{at}"
         return f"move {p[0]} → ... → {p[-1]} ({len(p)} 点){at}"
     if t == "button":
+        if getattr(s, "template", None):
+            return f"button ★[{s.template}]{at}"
+        if getattr(s, "delay_preset", None):
+            return f"button {s.name} delay◆{s.delay_preset}{at}"
         return f"button {s.name}{at}"
     if t == "click":
-        if getattr(s, "preset", None):
-            return f"click [{s.preset}]{at}"
-        return f"click ({s.pos[0]:.3f}, {s.pos[1]:.3f}){at}"
+        if getattr(s, "template", None):
+            return f"click ★[{s.template}]{at}"
+        head = (
+            f"click [{s.preset}]"
+            if getattr(s, "preset", None)
+            else f"click ({s.pos[0]:.3f}, {s.pos[1]:.3f})"
+        )
+        if getattr(s, "delay_preset", None):
+            return f"{head} delay◆{s.delay_preset}{at}"
+        return f"{head}{at}"
     if t == "buy":
         return f"buy {len(s.items)} 项"
     if t == "sleep":

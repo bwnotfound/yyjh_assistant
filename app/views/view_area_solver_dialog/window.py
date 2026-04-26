@@ -61,8 +61,7 @@ from utils import Mumu
 from app.core.ocr import CoordReader, TemplateOCR
 from app.core.profiles import (
     DEFAULT_MOVEMENT_YAML_PATH,
-    MovementProfile,
-    MovementRegistry,
+    MovementConfig,
     VisionSpec,
     ViewAreaSolveResult,
     compute_view_area_reachability,
@@ -132,8 +131,7 @@ class ViewAreaSolverDialog(QDialog):
         self.resize(580, 640)
 
         self._mumu = mumu
-        self._movement_registry: Optional[MovementRegistry] = None
-        self._movement_profile: Optional[MovementProfile] = None
+        self._movement_profile: Optional[MovementConfig] = None
         self._map_profile: Optional[MapProfile] = None
         self._load_profiles()
 
@@ -169,12 +167,13 @@ class ViewAreaSolverDialog(QDialog):
     # -------------------------------------------------------------------------
 
     def _load_profiles(self) -> None:
-        key = f"{self._mumu.device_w}x{self._mumu.device_h}"
+        # MovementConfig 不再按分辨率分桶
         try:
-            self._movement_registry = MovementRegistry.load(DEFAULT_MOVEMENT_YAML_PATH)
-            self._movement_profile = self._movement_registry.profiles.get(key)
+            self._movement_profile = MovementConfig.load(DEFAULT_MOVEMENT_YAML_PATH)
         except Exception as e:
             log.warning("加载 movement_profile 失败: %s", e)
+        # map_registry 仍按分辨率分桶
+        key = f"{self._mumu.device_w}x{self._mumu.device_h}"
         try:
             map_reg = MapRegistry.load(MAP_REGISTRY_PATH)
             self._map_profile = map_reg.profiles.get(key)
@@ -602,12 +601,8 @@ class ViewAreaSolverDialog(QDialog):
                 "需要 vx0 < vx1 且 vy0 < vy1。请重新观测。",
             )
             return
-        if (
-            self._movement_profile is None
-            or self._movement_registry is None
-            or self._movement_registry.path is None
-        ):
-            QMessageBox.warning(self, "无法保存", "运动配置 registry 未加载。")
+        if self._movement_profile is None:
+            QMessageBox.warning(self, "无法保存", "运动配置未加载。")
             return
 
         new_va = (
@@ -628,7 +623,7 @@ class ViewAreaSolverDialog(QDialog):
 
         self._movement_profile.map_view_area = new_va
         try:
-            self._movement_registry.save()
+            self._movement_profile.save()
         except Exception as e:
             log.exception("保存 movement_profile 失败")
             QMessageBox.critical(self, "保存失败", f"{type(e).__name__}: {e}")

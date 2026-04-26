@@ -31,7 +31,7 @@ from utils import Mumu
 from app.core.ocr import CoordReader
 from app.core.profiles import (
     ClickDelays,
-    MovementProfile,
+    MovementConfig,
     VisionSpec,
     compute_character_screen_pos,
 )
@@ -99,7 +99,7 @@ class Mover:
     def __init__(
         self,
         mumu: Mumu,
-        profile: MovementProfile,
+        profile: MovementConfig,
         coord_reader: Optional[CoordReader] = None,
     ) -> None:
         self.mumu = mumu

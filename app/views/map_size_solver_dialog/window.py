@@ -58,7 +58,7 @@ from utils import Mumu
 from app.core.ocr import CoordReader, TemplateOCR
 from app.core.profiles import (
     MapSizeSolveResult,
-    MovementProfile,
+    MovementConfig,
     VisionSpec,
     solve_map_size_observation,
 )
@@ -117,7 +117,7 @@ class MapSizeSolverDialog(QDialog):
     def __init__(
         self,
         mumu: Mumu,
-        movement_profile: MovementProfile,
+        movement_profile: MovementConfig,
         vision_name: str,
         map_label: str,
         initial_size: Optional[tuple[int, int]] = None,
