@@ -30,8 +30,14 @@ ui_positions:
     first: [0.2949, 0.2992]
     second: [0.5407, 0.747]
     second_index: 8
-click_delays: {default: 0.65, blank_skip: 0.4, buy_confirm: 1.0, buy_exit: 1.2, open_package: 0.8,
-  ticket: 1.0}
+click_delays:
+  default: 0.65
+  blank_skip: 0.4
+  buy_confirm: 1.0
+  buy_exit: 1.2
+  open_package: 0.8
+  ticket: 1.0
+  custom: {打怪: 1.3}
 minimap_coord_roi: [0.9361581920903955, 0.3072289156626506, 0.9824858757062147, 0.33634538152610444]
 map_view_area: [0.06532485875706215, 0.18753137550200805, 0.804643361581921, 0.8760353915662651]
 click_templates:

@@ -1,0 +1,8 @@
+name: 帝陵刷怪
+loop_count: 1
+loop_interval: 0.65
+starting_map: 帝陵内部
+steps:
+- type: move
+  path:
+  - [17, 17]
