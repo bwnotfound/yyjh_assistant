@@ -770,6 +770,8 @@ def _describe_step(s) -> str:
     if t == "buy":
         return f"buy {len(s.items)} 项"
     if t == "sleep":
+        if getattr(s, "preset", None):
+            return f"sleep [{s.preset}]{at}"
         return f"sleep {s.seconds}s{at}"
     if t == "include":
         return f"include → {s.routine}{at}"

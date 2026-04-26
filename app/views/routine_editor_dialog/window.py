@@ -20,6 +20,7 @@ Routine 编辑器主对话框。
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from copy import deepcopy
 from pathlib import Path
@@ -30,6 +31,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -69,6 +71,8 @@ from app.core.routine import (
     IncludeStep,
     MoveStep,
     Routine,
+    SLEEP_PRESETS,
+    SLEEP_PRESET_NAMES,
     SleepStep,
     TravelStep,
     WaitPosStableStep,
@@ -161,6 +165,8 @@ def _describe_step(s: AnyStep) -> str:
         more = "..." if len(s.items) > 3 else ""
         return f"buy [{head}{more}] ({len(s.items)} 项){at}"
     if t == "sleep":
+        if s.preset:
+            return f"sleep [{s.preset}]{at}"
         return f"sleep {s.seconds}s{at}"
     if t == "include":
         return f"include → {s.routine}{at}"
@@ -760,10 +766,21 @@ class RoutineEditorDialog(QDialog):
             elif isinstance(s, MoveStep) and not s.path:
                 return f"第 {i} 步 (move): path 不能为空"
             elif isinstance(s, ClickStep):
-                if s.preset and s.preset not in CLICK_PRESET_NAMES:
+                if s.preset:
+                    valid = set(CLICK_PRESET_NAMES) | {"character_pos"}
+                    if self._movement_profile is not None:
+                        valid.update(self._movement_profile.ui.custom.keys())
+                    if s.preset not in valid:
+                        return (
+                            f"第 {i} 步 (click): preset {s.preset!r} 非法；"
+                            f"合法值: 内置 {sorted(CLICK_PRESET_NAMES)} + "
+                            f"character_pos + 当前自建预设"
+                        )
+            elif isinstance(s, SleepStep):
+                if s.preset and s.preset not in SLEEP_PRESET_NAMES:
                     return (
-                        f"第 {i} 步 (click): preset {s.preset!r} 非法；"
-                        f"合法值: {sorted(CLICK_PRESET_NAMES)}"
+                        f"第 {i} 步 (sleep): preset {s.preset!r} 非法；"
+                        f"合法值: {sorted(SLEEP_PRESET_NAMES)}"
                     )
             elif isinstance(s, BuyStep) and not s.items:
                 return f"第 {i} 步 (buy): items 不能为空"
@@ -1109,20 +1126,56 @@ class RoutineEditorDialog(QDialog):
         delay_spin.valueChanged.connect(_delay_changed)
         form.addRow("delay:", delay_spin)
 
+    # ========================================================================
+    # ClickStep: 预设系统
+    #
+    # 下拉项分组 (从上到下):
+    #   1. (自定义)
+    #   2. 内置预设       —— CLICK_PRESETS (硬编码常量)
+    #   3. 自定义预设     —— movement_profile.ui.custom 字典 (用户自建)
+    #   4. ── 操作 ──     —— "+ 新建预设…" / "+ 管理预设…"
+    #
+    # 用 itemData() 区分:
+    #   None        → 自定义模式 (用 step.pos)
+    #   "<NEW>"     → 触发新建预设对话框
+    #   "<MANAGE>"  → 触发管理预设对话框
+    #   其他字符串  → preset 名 (内置或 custom 都用同样语义)
+    # ========================================================================
+    _PRESET_ACTION_NEW = "<NEW>"
+    _PRESET_ACTION_MANAGE = "<MANAGE>"
+
     def _build_click_fields(self, form: QFormLayout, step: ClickStep, row: int) -> None:
         """
         ClickStep 编辑器:
-          - "预设" 下拉: (自定义) + 各 ui 按钮预设
+          - "预设" 下拉: (自定义) + 内置预设 + 自定义预设 + 动作 (新建/管理)
           - 选预设: x/y spinbox 禁用编辑,但显示解析后的坐标
           - 选自定义: x/y spinbox 启用 + 「从游戏取」可用
+          - 点 "+ 新建预设…": 弹窗输入名+取坐标, 写入 movement profile, 切换到该预设
           - skip / delay 与模式无关
         """
         # ─ 预设下拉 ─
         preset_combo = QComboBox()
+        # 自定义模式
         preset_combo.addItem("(自定义)", None)
+        # 内置预设
         for name, label in CLICK_PRESETS:
             preset_combo.addItem(f"{name} — {label}", name)
+        # 自定义预设 (从 movement_profile.ui.custom 读出)
+        sep_idx_custom: Optional[int] = None
+        custom_names: list[str] = []
+        if self._movement_profile is not None and self._movement_profile.ui.custom:
+            sep_idx_custom = preset_combo.count()
+            preset_combo.insertSeparator(sep_idx_custom)
+            for cname in sorted(self._movement_profile.ui.custom.keys()):
+                preset_combo.addItem(f"{cname} (自建)", cname)
+                custom_names.append(cname)
+        # 动作项
+        preset_combo.insertSeparator(preset_combo.count())
+        preset_combo.addItem("+ 新建预设…", self._PRESET_ACTION_NEW)
+        if custom_names:
+            preset_combo.addItem("+ 管理预设…", self._PRESET_ACTION_MANAGE)
 
+        # 当前 step.preset 在下拉里的 index
         initial_idx = 0
         if step.preset:
             found = preset_combo.findData(step.preset)
@@ -1130,6 +1183,7 @@ class RoutineEditorDialog(QDialog):
                 initial_idx = found
             else:
                 # yaml 里 preset 写错或将来扩展过 → 临时项保住值不丢
+                # (插在动作项前面更合理, 但为简单起见追加到末尾)
                 preset_combo.addItem(f"{step.preset} (未知)", step.preset)
                 initial_idx = preset_combo.count() - 1
         preset_combo.setCurrentIndex(initial_idx)
@@ -1160,14 +1214,15 @@ class RoutineEditorDialog(QDialog):
                 return None
             if name == "character_pos":
                 return self._movement_profile.character_pos
-            v = getattr(self._movement_profile.ui, name, None)
-            if isinstance(v, tuple) and len(v) == 2:
-                return v
-            return None
+            # 复用 UIPositions.resolve_single_point: 内置字段 → custom 字典
+            return self._movement_profile.ui.resolve_single_point(name)
 
         def _refresh_preset_state():
             """根据当前 preset 模式刷新 spinbox 启用状态 + hint"""
             preset_name = preset_combo.currentData()
+            # 动作项不应该是"持久"的 selection, 但 _refresh 期间被调到时也兜住
+            if preset_name in (self._PRESET_ACTION_NEW, self._PRESET_ACTION_MANAGE):
+                return
             is_preset = preset_name is not None
             x_spin.setEnabled(not is_preset)
             y_spin.setEnabled(not is_preset)
@@ -1179,12 +1234,17 @@ class RoutineEditorDialog(QDialog):
             try:
                 if is_preset:
                     resolved = _resolve_preset_pos(preset_name)
+                    is_custom = (
+                        self._movement_profile is not None
+                        and preset_name in self._movement_profile.ui.custom
+                    )
+                    source_hint = "自建" if is_custom else "内置/运动配置"
                     if resolved is not None:
                         x_spin.setValue(resolved[0])
                         y_spin.setValue(resolved[1])
                         preset_hint.setText(
                             f"✓ 解析为 ({resolved[0]:.4f}, {resolved[1]:.4f}) "
-                            f"— 可在「运动配置」里调整"
+                            f"— {source_hint}, 可在「运动配置」里调整"
                         )
                     else:
                         preset_hint.setText(
@@ -1200,8 +1260,74 @@ class RoutineEditorDialog(QDialog):
                 x_spin.blockSignals(False)
                 y_spin.blockSignals(False)
 
+        def _rebuild_combo(select_preset: Optional[str]) -> None:
+            """
+            重建下拉项 (新建/删除自定义预设后调用), 并把当前选择切到 select_preset。
+            select_preset = None 表示切到 (自定义)。
+            """
+            preset_combo.blockSignals(True)
+            try:
+                preset_combo.clear()
+                preset_combo.addItem("(自定义)", None)
+                for name, label in CLICK_PRESETS:
+                    preset_combo.addItem(f"{name} — {label}", name)
+                cnames: list[str] = []
+                if (
+                    self._movement_profile is not None
+                    and self._movement_profile.ui.custom
+                ):
+                    preset_combo.insertSeparator(preset_combo.count())
+                    for cname in sorted(self._movement_profile.ui.custom.keys()):
+                        preset_combo.addItem(f"{cname} (自建)", cname)
+                        cnames.append(cname)
+                preset_combo.insertSeparator(preset_combo.count())
+                preset_combo.addItem("+ 新建预设…", self._PRESET_ACTION_NEW)
+                if cnames:
+                    preset_combo.addItem("+ 管理预设…", self._PRESET_ACTION_MANAGE)
+                # 切到目标
+                idx = preset_combo.findData(select_preset)
+                preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            finally:
+                preset_combo.blockSignals(False)
+
         def _on_preset_changed(_=None):
-            step.preset = preset_combo.currentData()
+            data = preset_combo.currentData()
+            # 动作项: 触发对话框, 然后回滚下拉到原 step.preset
+            if data == self._PRESET_ACTION_NEW:
+                new_name = self._open_new_click_preset_dialog(row)
+                if new_name:
+                    # 新建成功: 重建下拉并选中新建项, 同时更新 step.preset
+                    step.preset = new_name
+                    _rebuild_combo(new_name)
+                    _refresh_preset_state()
+                    self._refresh_step_label(row)
+                    self._mark_dirty()
+                else:
+                    # 取消: 回滚下拉到原值
+                    _rebuild_combo(step.preset)
+                return
+            if data == self._PRESET_ACTION_MANAGE:
+                changed = self._open_manage_click_presets_dialog()
+                # 管理可能删除当前选中的预设, 检查是否还存在
+                still_valid = (
+                    not step.preset
+                    or step.preset in CLICK_PRESET_NAMES
+                    or (
+                        self._movement_profile is not None
+                        and step.preset in self._movement_profile.ui.custom
+                    )
+                )
+                if not still_valid:
+                    step.preset = None
+                _rebuild_combo(step.preset)
+                _refresh_preset_state()
+                if changed:
+                    self._refresh_step_label(row)
+                    self._mark_dirty()
+                return
+
+            # 普通预设切换
+            step.preset = data
             _refresh_preset_state()
             self._refresh_step_label(row)
             self._mark_dirty()
@@ -1267,6 +1393,92 @@ class RoutineEditorDialog(QDialog):
         delay_spin.valueChanged.connect(_delay_changed)
         form.addRow("delay:", delay_spin)
 
+    # ========================================================================
+    # ClickStep: 自定义预设 - 新建 / 管理
+    # ========================================================================
+
+    def _open_new_click_preset_dialog(self, row: int) -> Optional[str]:
+        """
+        弹"新建 click 预设"对话框, 录入名+坐标, 写入 movement_profile.ui.custom
+        并保存到磁盘。成功返回新预设名, 取消返回 None。
+
+        前置: 当前必须有 _movement_profile (无配置时不放进 click 编辑器, 但兜一下)
+        """
+        if self._movement_profile is None:
+            QMessageBox.warning(
+                self,
+                "无运动配置",
+                "当前分辨率没有运动配置, 无法创建预设。请先在主界面「运动配置」里建立。",
+            )
+            return None
+
+        existing_names = self._all_existing_preset_names()
+        dlg = _NewClickPresetDialog(
+            parent=self,
+            existing_names=existing_names,
+            mumu=self._mumu,
+            pick_points_fn=self._pick_points,
+            row_label=f"第 {row + 1} 步",
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return None
+
+        name, x, y = dlg.result()
+        # 写入 profile + 保存到磁盘
+        try:
+            self._movement_profile.ui.custom[name] = (x, y)
+            mov_reg = MovementRegistry.load(DEFAULT_MOVEMENT_YAML_PATH)
+            # 把当前 (内存中) 的 _movement_profile 同步到 registry 后保存
+            # 避免直接 save 当前内存对象覆盖磁盘上其它分辨率的 profile
+            key = f"{self._mumu.device_w}x{self._mumu.device_h}"
+            mov_reg.profiles[key] = self._movement_profile
+            mov_reg.save()
+        except Exception as e:
+            log.exception("保存新建 click 预设失败")
+            QMessageBox.critical(self, "保存失败", f"{type(e).__name__}: {e}")
+            # 回滚内存
+            self._movement_profile.ui.custom.pop(name, None)
+            return None
+        return name
+
+    def _open_manage_click_presets_dialog(self) -> bool:
+        """
+        弹"管理自定义预设"对话框, 支持删除单个 custom 预设。
+        改动会立刻保存到磁盘。返回 True 表示有改动 (需要重建下拉/标记 dirty)。
+        """
+        if self._movement_profile is None or not self._movement_profile.ui.custom:
+            QMessageBox.information(self, "无可管理项", "当前没有自建预设。")
+            return False
+        dlg = _ManageClickPresetsDialog(
+            parent=self,
+            custom=self._movement_profile.ui.custom,
+        )
+        dlg.exec()  # 用户在对话框里直接操作 dict, 这里只看是否真的改了
+        if not dlg.changed:
+            return False
+        # 持久化
+        try:
+            mov_reg = MovementRegistry.load(DEFAULT_MOVEMENT_YAML_PATH)
+            key = f"{self._mumu.device_w}x{self._mumu.device_h}"
+            mov_reg.profiles[key] = self._movement_profile
+            mov_reg.save()
+        except Exception as e:
+            log.exception("保存 click 预设变更失败")
+            QMessageBox.critical(self, "保存失败", f"{type(e).__name__}: {e}")
+            return False
+        return True
+
+    def _all_existing_preset_names(self) -> set[str]:
+        """收集所有已用预设名 (内置 + 自建 + 'character_pos' + UIPositions 非单点字段),
+        给新建对话框做重名校验用。"""
+        names = set(CLICK_PRESET_NAMES)
+        names.add("character_pos")
+        # 也防止与非单点字段重名 (chat_btn / table_btn / buy_item_grid)
+        names.update({"chat_btn", "table_btn", "buy_item_grid"})
+        if self._movement_profile is not None:
+            names.update(self._movement_profile.ui.custom.keys())
+        return names
+
     def _build_buy_fields(self, form: QFormLayout, step: BuyStep, row: int) -> None:
         items_widget = BuyItemsWidget(step.items)
 
@@ -1279,19 +1491,100 @@ class RoutineEditorDialog(QDialog):
         form.addRow("items:", items_widget)
 
     def _build_sleep_fields(self, form: QFormLayout, step: SleepStep, row: int) -> None:
+        """
+        SleepStep 编辑器:
+          - "预设" 下拉: (自定义) + ClickDelays 各分类延时
+          - 选预设: seconds spinbox 禁用编辑, 但显示从运动配置解析出的实际秒数
+          - 选自定义: seconds spinbox 启用
+          - 镜像 _build_click_fields 的交互模式以保持一致体验
+        """
+        # ─ 预设下拉 ─
+        preset_combo = QComboBox()
+        preset_combo.addItem("(自定义)", None)
+        for name, label in SLEEP_PRESETS:
+            preset_combo.addItem(f"{name} — {label}", name)
+
+        initial_idx = 0
+        if step.preset:
+            found = preset_combo.findData(step.preset)
+            if found >= 0:
+                initial_idx = found
+            else:
+                # yaml 里 preset 写错或将来扩展过 → 临时项保住值不丢
+                preset_combo.addItem(f"{step.preset} (未知)", step.preset)
+                initial_idx = preset_combo.count() - 1
+        preset_combo.setCurrentIndex(initial_idx)
+
+        # ─ 预设解析 hint ─
+        preset_hint = QLabel("")
+        preset_hint.setStyleSheet("color: #666; font-size: 11px;")
+        preset_hint.setWordWrap(True)
+
+        # ─ seconds spinbox ─
         spin = QDoubleSpinBox()
         spin.setRange(0, 600)
         spin.setDecimals(2)
         spin.setSingleStep(0.5)
         spin.setValue(step.seconds)
 
-        def _changed(v: float):
+        def _resolve_preset_seconds(name: Optional[str]) -> Optional[float]:
+            """编辑器侧用: 把 preset 名解析为秒数. 无运动配置返回 None."""
+            if not name or self._movement_profile is None:
+                return None
+            try:
+                return float(self._movement_profile.click_delays.resolve(name))
+            except Exception:
+                return None
+
+        def _refresh_preset_state():
+            """根据当前 preset 模式刷新 spinbox 启用状态 + hint"""
+            preset_name = preset_combo.currentData()
+            is_preset = preset_name is not None
+            spin.setEnabled(not is_preset)
+
+            spin.blockSignals(True)
+            try:
+                if is_preset:
+                    resolved = _resolve_preset_seconds(preset_name)
+                    if resolved is not None:
+                        spin.setValue(resolved)
+                        preset_hint.setText(
+                            f"✓ 解析为 {resolved:.2f}s — 运行时从「运动配置」"
+                            f"的 click_delays.{preset_name} 动态读取，"
+                            f"改一处全 routine 生效"
+                        )
+                    else:
+                        preset_hint.setText(
+                            f"⚠ 当前运动配置无法解析 {preset_name!r}；"
+                            f"运行时会回退到 click_delays.default"
+                        )
+                else:
+                    spin.setValue(step.seconds)
+                    preset_hint.setText("")
+            finally:
+                spin.blockSignals(False)
+
+        def _on_preset_changed(_=None):
+            step.preset = preset_combo.currentData()
+            _refresh_preset_state()
+            self._refresh_step_label(row)
+            self._mark_dirty()
+
+        preset_combo.currentIndexChanged.connect(_on_preset_changed)
+        form.addRow("预设:", preset_combo)
+        form.addRow("", preset_hint)
+
+        def _seconds_changed(v: float):
+            # 只在自定义模式下写回 step.seconds —— preset 模式 spinbox 已 blockSignals 不会触发
             step.seconds = v
             self._refresh_step_label(row)
             self._mark_dirty()
 
-        spin.valueChanged.connect(_changed)
+        spin.valueChanged.connect(_seconds_changed)
         form.addRow("seconds:", spin)
+
+        # 初始状态同步 (含 preset 模式下解析显示 + 禁用 spinbox)
+        _refresh_preset_state()
 
     def _build_include_fields(
         self, form: QFormLayout, step: IncludeStep, row: int
@@ -1457,3 +1750,207 @@ def _hline() -> QFrame:
     f.setFrameShape(QFrame.HLine)
     f.setFrameShadow(QFrame.Sunken)
     return f
+
+
+# =============================================================================
+# 对话框: 新建 click 自定义预设
+# =============================================================================
+
+
+# 预设名校验:
+#   - 允许中英文 + 数字 + 下划线
+#   - 首字符不能是数字 (避免与"全数字"混淆 + 一些 yaml 工具的解析坑)
+#   - 长度 1~32 (UI 显示和 yaml 序列化都不会被撑爆)
+# 排除连字符/点/空格/冒号等 yaml 保留字符 - 否则 yaml 序列化得加引号
+_PRESET_NAME_RE = re.compile(r"^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_]{0,31}$")
+
+
+class _NewClickPresetDialog(QDialog):
+    """
+    弹小窗:输入预设名 + x/y + 「从游戏取」+ 确定/取消。
+    成功 accept 后通过 result() 拿到 (name, x, y)。
+
+    校验:
+      - 名字非空 + 符合 _PRESET_NAME_RE
+      - 不与 existing_names (内置 + character_pos + 非单点 + 已有 custom) 冲突
+      - x / y 在 [0, 1]
+    所有校验失败时实时禁用「确定」按钮 + 显示提示。
+    """
+
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        existing_names: set[str],
+        mumu: Mumu,
+        pick_points_fn,  # callable(n, labels) -> list[Record]
+        row_label: str,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("新建 click 预设")
+        self.resize(420, 200)
+        self._existing = existing_names
+        self._mumu = mumu
+        self._pick = pick_points_fn
+        self._row_label = row_label
+        self._build_ui()
+        self._validate()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+        root.addLayout(form)
+
+        # 名字
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText("中英文/数字/下划线均可，如 张三丰_pos")
+        self._name_edit.textChanged.connect(self._validate)
+        form.addRow("名字:", self._name_edit)
+
+        # x / y / 取
+        self._x_spin = QDoubleSpinBox()
+        self._x_spin.setRange(0.0, 1.0)
+        self._x_spin.setDecimals(4)
+        self._x_spin.setSingleStep(0.001)
+        self._x_spin.setValue(0.5)
+
+        self._y_spin = QDoubleSpinBox()
+        self._y_spin.setRange(0.0, 1.0)
+        self._y_spin.setDecimals(4)
+        self._y_spin.setSingleStep(0.001)
+        self._y_spin.setValue(0.5)
+
+        btn_pick = QPushButton("从游戏取")
+        btn_pick.clicked.connect(self._on_pick)
+
+        pos_row = QHBoxLayout()
+        pos_row.addWidget(QLabel("x"))
+        pos_row.addWidget(self._x_spin)
+        pos_row.addWidget(QLabel("y"))
+        pos_row.addWidget(self._y_spin)
+        pos_row.addWidget(btn_pick)
+        pos_row.addStretch(1)
+        form.addRow("坐标:", _wrap(pos_row))
+
+        # hint
+        self._hint = QLabel("")
+        self._hint.setStyleSheet("color: #c0392b; font-size: 11px;")
+        self._hint.setWordWrap(True)
+        root.addWidget(self._hint)
+
+        # 按钮
+        self._buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self._buttons.accepted.connect(self.accept)
+        self._buttons.rejected.connect(self.reject)
+        root.addWidget(self._buttons)
+
+    def _on_pick(self) -> None:
+        records = self._pick(1, [f"{self._row_label} click 位置 (新预设)"])
+        if records:
+            self._x_spin.setValue(records[0].nx)
+            self._y_spin.setValue(records[0].ny)
+
+    def _validate(self) -> None:
+        name = self._name_edit.text().strip()
+        msg = ""
+        ok = True
+        if not name:
+            ok = False
+            msg = ""  # 空名字不报错, 只是不能确定
+        elif not _PRESET_NAME_RE.match(name):
+            ok = False
+            msg = "名字只能含中英文、数字、下划线; " "不能以数字开头, 长度 1~32"
+        elif name in self._existing:
+            ok = False
+            msg = f"{name!r} 已存在 (内置或自建预设)"
+        self._hint.setText(msg)
+        self._buttons.button(QDialogButtonBox.Ok).setEnabled(ok)
+
+    def result(self) -> tuple[str, float, float]:  # type: ignore[override]
+        return (
+            self._name_edit.text().strip(),
+            self._x_spin.value(),
+            self._y_spin.value(),
+        )
+
+
+# =============================================================================
+# 对话框: 管理已有 click 自定义预设
+# =============================================================================
+
+
+class _ManageClickPresetsDialog(QDialog):
+    """
+    管理 movement_profile.ui.custom 字典:
+      - 列出所有 custom 预设, 显示坐标
+      - 选中某项可点「删除选中」
+    用户操作直接改传入的 dict 引用; 上层自行决定何时 save。
+    """
+
+    def __init__(
+        self, *, parent: QWidget, custom: dict[str, tuple[float, float]]
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("管理自定义 click 预设")
+        self.resize(440, 360)
+        self._custom = custom
+        self.changed = False
+        self._build_ui()
+        self._refresh_list()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(8)
+
+        root.addWidget(
+            QLabel("当前所有自建 click 预设。删除后该预设在所有 routine 里失效。")
+        )
+
+        self._list = QListWidget()
+        root.addWidget(self._list, 1)
+
+        btns = QHBoxLayout()
+        self._btn_delete = QPushButton("删除选中")
+        self._btn_delete.clicked.connect(self._on_delete)
+        self._btn_delete.setEnabled(False)
+        btns.addWidget(self._btn_delete)
+        btns.addStretch(1)
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(self.accept)
+        btns.addWidget(btn_close)
+        root.addLayout(btns)
+
+        self._list.itemSelectionChanged.connect(
+            lambda: self._btn_delete.setEnabled(self._list.currentItem() is not None)
+        )
+
+    def _refresh_list(self) -> None:
+        self._list.clear()
+        for name in sorted(self._custom.keys()):
+            x, y = self._custom[name]
+            item = QListWidgetItem(f"{name}    ({x:.4f}, {y:.4f})")
+            item.setData(Qt.UserRole, name)
+            self._list.addItem(item)
+
+    def _on_delete(self) -> None:
+        item = self._list.currentItem()
+        if item is None:
+            return
+        name = item.data(Qt.UserRole)
+        ans = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确认删除自建预设 {name!r} ?\n所有引用该预设的 routine 步骤将在运行时报错, "
+            f"需要手动改回自定义或换一个预设。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if ans != QMessageBox.Yes:
+            return
+        self._custom.pop(name, None)
+        self.changed = True
+        self._refresh_list()

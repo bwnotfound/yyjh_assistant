@@ -12,7 +12,7 @@ steps:
   - [-1, -1]
   - [6, 7]
   - [0, 8]
-- {type: sleep, seconds: 3.0}
+- {type: sleep, seconds: 3.0, preset: travel_transition}
 - type: move
   at_map: 帝陵
   path:
@@ -21,5 +21,4 @@ steps:
   - [8, 6]
 - type: click
   pos: [0.5, 0.5]
-  preset: blank_btn
 - {type: button, name: chat_4, delay: 0.2}

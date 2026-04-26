@@ -141,6 +141,35 @@ class MovementProfileDialog(QDialog):
         ]:
             entries.append(_simple_pt(attr, label))
 
+        # 自定义 click 预设 (来自 routine 编辑器「新建预设」)
+        # 每个自建预设作为一个 POINT 类型 entry, getter/setter 操作 ui.custom 字典。
+        # 这样在运动配置里改坐标 → 保存 → 所有引用该预设的 routine 立即生效。
+        # 列表按名字排序保证稳定显示顺序。
+        def _custom_pt(name: str):
+            """name 闭包: 给定 custom 字典 key, 返回操作该 key 的 Entry"""
+
+            def getter(n=name):
+                return ui.custom.get(n)
+
+            def setter(v, n=name):
+                if v is None:
+                    # 编辑器允许"清空"一个点位 (传 None) - 自定义预设清空 = 删除条目
+                    # (与内置字段允许 None 留位的语义不同, 自定义预设只在有值时存在)
+                    ui.custom.pop(n, None)
+                else:
+                    ui.custom[n] = (float(v[0]), float(v[1]))
+
+            return Entry(
+                key=f"ui.custom.{name}",
+                label=f"自建: {name}",
+                kind=EntryKind.POINT,
+                getter=getter,
+                setter=setter,
+            )
+
+        for cname in sorted(ui.custom.keys()):
+            entries.append(_custom_pt(cname))
+
         # 等距按钮组
         for attr, label in [
             ("chat_btn_group", "对话菜单按钮（等距）"),

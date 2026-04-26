@@ -406,6 +406,13 @@ class UIPositions:
     buy_confirm_btn: Optional[tuple[float, float]] = None
     buy_exit_btn: Optional[tuple[float, float]] = None
 
+    # 自定义命名预设（用户在 routine 编辑器里通过「新建预设」录入的）
+    # —— 与上面 6 个内置单点共享同一命名空间, 但隔离存储:
+    #   - 内置点字段名固定, 给 travel/buy/button 等业务流程硬依赖
+    #   - 自定义点放这个字典, 名字由用户起 (^[A-Za-z_][A-Za-z0-9_]*$)
+    #     运行时 ClickStep 解析 preset 时如果不是内置名, 就来这里查
+    custom: dict[str, tuple[float, float]] = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         d: dict = {}
         for name in (
@@ -425,6 +432,9 @@ class UIPositions:
             d["table_btn"] = self.table_btn_group.to_dict()
         if self.buy_item_grid is not None:
             d["buy_item_grid"] = self.buy_item_grid.to_dict()
+        if self.custom:
+            # 序列化为 list 形式与其他坐标字段一致
+            d["custom"] = {k: list(v) for k, v in self.custom.items()}
         return d
 
     @classmethod
@@ -436,6 +446,12 @@ class UIPositions:
             v = d.get(key)
             return tuple(v) if v else None
 
+        custom_raw = d.get("custom") or {}
+        custom: dict[str, tuple[float, float]] = {}
+        for name, val in custom_raw.items():
+            if isinstance(val, (list, tuple)) and len(val) == 2:
+                custom[str(name)] = (float(val[0]), float(val[1]))
+
         return cls(
             package_btn=_pair("package_btn"),
             ticket_btn=_pair("ticket_btn"),
@@ -446,7 +462,33 @@ class UIPositions:
             buy_increase_btn=_pair("buy_increase_btn"),
             buy_confirm_btn=_pair("buy_confirm_btn"),
             buy_exit_btn=_pair("buy_exit_btn"),
+            custom=custom,
         )
+
+    # 内置单点字段名 (与 to_dict 序列化的字段一致)。external 模块用这个判断
+    # 一个 preset 名是不是落在内置字段, 而不是用 hasattr (会把 chat_btn_group
+    # 这些非"单点"字段也算上)。
+    BUILTIN_SINGLE_POINT_FIELDS: tuple[str, ...] = (
+        "package_btn",
+        "ticket_btn",
+        "blank_btn",
+        "buy_increase_btn",
+        "buy_confirm_btn",
+        "buy_exit_btn",
+    )
+
+    def resolve_single_point(self, name: str) -> Optional[tuple[float, float]]:
+        """
+        统一入口: 给定一个 preset 名, 返回 (x, y) 或 None。
+        查找顺序: 内置单点字段 → custom 字典。
+        不在这两处 (如 chat_btn / character_pos) 返回 None, 由上层另行处理。
+        """
+        if name in self.BUILTIN_SINGLE_POINT_FIELDS:
+            v = getattr(self, name, None)
+            if isinstance(v, tuple) and len(v) == 2:
+                return v
+            return None
+        return self.custom.get(name)
 
     def chat_btn(self, index_1based: int) -> tuple[float, float]:
         if self.chat_btn_group is None:

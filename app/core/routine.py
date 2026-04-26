@@ -185,13 +185,63 @@ class BuyStep(Step):
 
 @dataclass
 class SleepStep(Step):
+    """
+    定时等待。两种模式:
+      - 自定义: preset = None, 用 seconds 字段
+      - 预设:   preset = ClickDelays 字段名, 运行时由 movement_profile.click_delays.resolve()
+                动态解析为秒数 (这样多个 routine 共享同一份延时配置, 改一处全局生效)。
+                seconds 字段在 preset 模式下被忽略, 但仍持久化以便切回自定义时兜底。
+
+    合法 preset 名见 SLEEP_PRESETS。
+    """
+
     seconds: float = 0.0
+    preset: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.TYPE = "sleep"
+        if self.preset is not None and self.preset not in SLEEP_PRESET_NAMES:
+            raise ValueError(
+                f"sleep 步骤 preset {self.preset!r} 非法; "
+                f"合法值: {sorted(SLEEP_PRESET_NAMES)}"
+            )
 
     def to_dict(self) -> dict:
-        return {**super().to_dict(), "seconds": self.seconds}
+        d = {**super().to_dict(), "seconds": self.seconds}
+        if self.preset:
+            d["preset"] = self.preset
+        return d
+
+
+# Sleep 步骤支持的预设清单 (preset_name, label)。
+# preset_name 严格对应 movement_profile.click_delays 的字段名 —— 运行时通过
+# ClickDelays.resolve(name) 解析为秒数。
+# 排序按 routine 实际使用频率 + 业务相关分组, UI 下拉直接按这个顺序展示。
+SLEEP_PRESETS: list[tuple[str, str]] = [
+    # ── 通用 ──
+    ("default", "默认延时（兜底）"),
+    # ── 切图 / 跳对话 (routine 里 sleep 最常用的两类) ──
+    ("travel_transition", "切图过场 (~3s)"),
+    ("blank_skip", "点空白跳对话"),
+    # ── 通用点击后 ──
+    ("button", "按钮点击后"),
+    ("click", "click step 后"),
+    # ── 购买流程 ──
+    ("buy_item", "购买：选商品后"),
+    ("buy_increase", "购买：数量 +1 后"),
+    ("buy_confirm", "购买：确认后"),
+    ("buy_exit", "购买：退出后"),
+    # ── Travel 流程 ──
+    ("open_package", "打开背包后"),
+    ("ticket", "点车票后"),
+    ("travel_icon", "点目标图标后"),
+    ("travel_confirm", "跳转确认后"),
+    # ── 飞行段 (普通 routine 不太用，但留着) ──
+    ("fly", "飞行：点角色后 (~0.8s)"),
+    ("fly_settle", "飞行：落地等待 (~3s)"),
+    ("move_step", "move 段间隔"),
+]
+SLEEP_PRESET_NAMES: set[str] = {name for name, _ in SLEEP_PRESETS}
 
 
 @dataclass

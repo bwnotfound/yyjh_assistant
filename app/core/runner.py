@@ -445,8 +445,9 @@ class RoutineRunner:
         解析 ClickStep 实际要点击的坐标:
           - preset 为空 → 直接用 step.pos
           - preset 是 "character_pos" → 从 MovementProfile 顶层取
-          - 其他 preset → 从 UIPositions 同名字段取，要求是单点 (x, y)
-        预设字段在 movement_profile 里没录或不是单点都直接报错。
+          - preset 在 UIPositions 内置单点字段中 → 从对应字段取
+          - preset 在 UIPositions.custom 中 → 从用户自建预设取
+          - 都查不到 → 报错指引用户去运动配置
         """
         if not step.preset:
             return step.pos
@@ -456,18 +457,23 @@ class RoutineRunner:
             return self.movement_profile.character_pos
 
         ui = self.movement_profile.ui
+        # 用统一入口 resolve_single_point: 内置字段 → custom 字典
+        pos = ui.resolve_single_point(name)
+        if pos is not None:
+            return pos
+
+        # 仍未命中: 可能是 chat_btn / table_btn 这种非单点字段被错填到 click step,
+        # 或者预设名拼写错误 / 没在 movement_profile 录入
         val = getattr(ui, name, None)
-        if val is None:
-            raise ValueError(
-                f"click 预设 {name!r} 在当前 movement_profile 里未配置；"
-                f"请去主界面「运动配置」录入"
-            )
-        if not (isinstance(val, tuple) and len(val) == 2):
+        if val is not None and not (isinstance(val, tuple) and len(val) == 2):
             raise ValueError(
                 f"click 预设 {name!r} 不是单点坐标 (got {val!r})；"
                 f"等距按钮组 / 商品栅格请用 button / buy 步骤"
             )
-        return val
+        raise ValueError(
+            f"click 预设 {name!r} 在当前 movement_profile 里未配置；"
+            f"请去主界面「运动配置」录入, 或在 routine 编辑器里「新建预设」"
+        )
 
     def _do_buy(self, step: BuyStep) -> None:
         ui = self.movement_profile.ui
@@ -489,7 +495,18 @@ class RoutineRunner:
         self.mumu.click(ui.buy_exit_btn, delay=1.0)
 
     def _do_sleep(self, step: SleepStep) -> None:
-        self._cancellable_sleep(step.seconds)
+        # preset 模式: 运行时从 movement_profile.click_delays 动态解析,
+        # 这样多个 routine 共享同一份延时配置。
+        if step.preset:
+            seconds = self.movement_profile.click_delays.resolve(step.preset)
+            _log(
+                self.hooks,
+                "info",
+                f"sleep [{step.preset}] → {seconds:.2f}s",
+            )
+        else:
+            seconds = step.seconds
+        self._cancellable_sleep(seconds)
 
     def _do_wait_pos_stable(self, step: WaitPosStableStep) -> None:
         ctx = self._make_map_ctx()
