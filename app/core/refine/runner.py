@@ -274,15 +274,40 @@ class RefineCaptureRunner:
                 accept = bool(self.policy(confirm))
                 decision = "accepted" if accept else "cancelled"
 
-                # 6. 写 yaml (用自维护的 refine_no, 但跟游戏内做交叉校验)
-                self._counter += 1
-                if confirm.refine_count_inclusive != self._counter:
-                    self.hooks.log(
-                        "warning",
-                        f"refine_no 不一致: 自维护={self._counter} "
-                        f"游戏内含本次={confirm.refine_count_inclusive} "
-                        f"(以自维护为准, 但建议人工核对一次)",
-                    )
+                # 6. 写 yaml — refine_no 决策:
+                # 优先用 OCR 出来的"已精炼:N次"(置信度高时), 自维护计数器作 fallback.
+                # 这样即使中间某次精炼解析失败 (refine_no 没写入 yaml), 下一次成功
+                # 时 OCR 读到的真实次数会自然反映, 避免自维护计数器跟游戏内错位.
+                # 防御: refine_no 只能前进不能倒退 — 如果 OCR 给的值 ≤ 已有自维护值,
+                # 大概率是 OCR 抖动或读到了 stale 帧, 仍以自维护为准.
+                CONFIDENCE_THRESHOLD = 0.6
+                use_ocr = (
+                    confirm.refine_count_confidence >= CONFIDENCE_THRESHOLD
+                    and confirm.refine_count_inclusive > self._counter
+                )
+                if use_ocr:
+                    if confirm.refine_count_inclusive > self._counter + 1:
+                        self.hooks.log(
+                            "info",
+                            f"refine_no 跳号: 自维护={self._counter} → "
+                            f"OCR={confirm.refine_count_inclusive} "
+                            f"(中间漏了 {confirm.refine_count_inclusive - self._counter - 1} 条, "
+                            f"以 OCR 值为准, 置信度={confirm.refine_count_confidence:.2f})",
+                        )
+                    self._counter = confirm.refine_count_inclusive
+                else:
+                    self._counter += 1
+                    if (
+                        confirm.refine_count_inclusive > 0
+                        and confirm.refine_count_inclusive != self._counter
+                    ):
+                        self.hooks.log(
+                            "warning",
+                            f"refine_no 不一致: 自维护={self._counter} "
+                            f"OCR={confirm.refine_count_inclusive} "
+                            f"(置信度={confirm.refine_count_confidence:.2f} "
+                            f"< {CONFIDENCE_THRESHOLD}, 以自维护为准)",
+                        )
                 rec = self.recorder.append_from_confirm(
                     confirm, refine_no=self._counter, decision=decision
                 )

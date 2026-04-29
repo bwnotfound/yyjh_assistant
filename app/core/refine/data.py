@@ -134,6 +134,11 @@ class ConfirmPanelState:
     extra_attrs_before: list[Attribute] = field(default_factory=list)  # 1~3 条
     new_attr: Optional[Attribute] = None
     replace_index: int = -1  # 0-based, 指向 extra_attrs_before 的某项
+    # OCR 识别 refine_count_inclusive 时取到的最低 cand 置信度.
+    # 0.0 表示识别失败 (此时 refine_count_inclusive 是 0 占位); >0 表示识别成功.
+    # runner 用这个值决定是否信任 OCR 给的次数 — 置信度高时, 把 OCR 值作为
+    # refine_no 写入 yaml, 避免自维护计数器在某次失败后跟游戏内错位.
+    refine_count_confidence: float = 0.0
 
 
 # =============================================================================
