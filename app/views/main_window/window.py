@@ -20,6 +20,7 @@ from utils import Mumu, MumuError
 from app.views.debug_tools_dialog import DebugToolsDialog
 from app.views.map_registry_dialog import MapRegistryDialog
 from app.views.movement_profile_dialog import MovementProfileDialog
+from app.views.refine_capture_dialog import RefineCaptureDialog
 from app.views.routine_editor_dialog import RoutineEditorDialog
 from app.views.routine_runner_dialog import RoutineRunnerDialog
 
@@ -38,6 +39,7 @@ class MainWindow(QMainWindow):
         self._movement_profile_dlg: Optional[MovementProfileDialog] = None
         self._routine_editor_dlg: Optional[RoutineEditorDialog] = None
         self._runner_dlg: Optional[RoutineRunnerDialog] = None
+        self._refine_capture_dlg: Optional[RefineCaptureDialog] = None
 
         self._build_ui()
 
@@ -77,6 +79,11 @@ class MainWindow(QMainWindow):
         btn_run.setMinimumHeight(40)
         btn_run.clicked.connect(self._open_runner)
         layout.addWidget(btn_run)
+
+        btn_refine = QPushButton("装备精炼序列采集")
+        btn_refine.setMinimumHeight(40)
+        btn_refine.clicked.connect(self._open_refine_capture)
+        layout.addWidget(btn_refine)
 
         layout.addStretch(1)
 
@@ -161,6 +168,17 @@ class MainWindow(QMainWindow):
         self._runner_dlg.raise_()
         self._runner_dlg.activateWindow()
 
+    def _open_refine_capture(self) -> None:
+        mumu = self._try_get_mumu()
+        if mumu is None:
+            return
+        if self._refine_capture_dlg is None:
+            self._refine_capture_dlg = RefineCaptureDialog(mumu, parent=self)
+            self._refine_capture_dlg.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._refine_capture_dlg.show()
+        self._refine_capture_dlg.raise_()
+        self._refine_capture_dlg.activateWindow()
+
     # ---------------- 资源 ----------------
 
     def closeEvent(self, ev) -> None:
@@ -170,6 +188,7 @@ class MainWindow(QMainWindow):
             self._movement_profile_dlg,
             self._routine_editor_dlg,
             self._runner_dlg,
+            self._refine_capture_dlg,
         ):
             if dlg is not None:
                 dlg.close()

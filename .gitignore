@@ -5,3 +5,5 @@ dev/
 tools
 config/templates
 debug/
+*.bak
+config/refine_logs

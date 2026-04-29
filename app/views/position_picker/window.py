@@ -90,6 +90,27 @@ class PickRecord:
     b: int
 
 
+@dataclass
+class PickRect:
+    """矩形选区记录 (rect_mode 下使用).
+
+    四个值都是归一化坐标 [0,1], 已保证 nx1 <= nx2 / ny1 <= ny2.
+    """
+
+    nx1: float
+    ny1: float
+    nx2: float
+    ny2: float
+
+    @property
+    def width_norm(self) -> float:
+        return self.nx2 - self.nx1
+
+    @property
+    def height_norm(self) -> float:
+        return self.ny2 - self.ny1
+
+
 class _HotkeyBridge(QObject):
     """pynput 监听线程 → Qt 主线程的信号桥"""
 
@@ -558,10 +579,21 @@ class PositionPickerDialog(QDialog):
 
 
 class _ZoomImageLabel(QLabel):
-    """承载放大后的截图，支持鼠标 hover (实时显示像素色) + click (采样)"""
+    """承载放大后的截图,支持鼠标 hover (实时显示像素色) + click (采样).
+
+    支持三种交互模式 (set_mode 切换, 默认 'point'):
+        'point'    左键单击采样 → emit clicked(x_disp, y_disp), 累积红色 markers
+        'rect'     左键 press→drag→release → emit rect_picked(x1,y1,x2,y2)
+                   (widget 像素坐标, 已规范化), 落定矩形以红色边框累积绘制
+        'readonly' 不响应左键; 仅 zoom + 右键 pan + hover. 用于"预览已配置 ROI"
+                   这类场景, 配合 add_rect_marker() 预画标注.
+    所有模式下右键拖动 pan 都可用.
+    """
 
     clicked = Signal(int, int)
     hovered = Signal(int, int)
+    # 拖框释放: widget 像素坐标 (x1, y1, x2, y2), 已保证 x1<x2 / y1<y2
+    rect_picked = Signal(int, int, int, int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -570,6 +602,8 @@ class _ZoomImageLabel(QLabel):
         # 标记位置以原图浮点像素坐标存储, 与放大倍率解耦;
         # 切换倍率时直接用 _zoom 反推 widget 坐标重绘, 不丢点。
         self._markers: list[tuple[float, float]] = []
+        # 已落定的矩形 (原图浮点像素坐标), 切倍率时按 _zoom 反推 widget 坐标
+        self._rect_markers: list[tuple[float, float, float, float]] = []
         self._zoom: int = 1
 
         # 右键拖动 pan 状态 (widget 1:1, 各倍率下手感恒定)
@@ -577,6 +611,12 @@ class _ZoomImageLabel(QLabel):
         self._panning: bool = False
         self._pan_anchor_global = None  # 鼠标 press 时屏幕坐标
         self._pan_anchor_scroll = (0, 0)  # 鼠标 press 时 scrollbar 值
+
+        # 矩形拖动状态
+        self._mode: str = "point"  # 'point' | 'rect' | 'readonly'
+        self._rect_dragging: bool = False
+        self._rect_press: Optional[tuple[int, int]] = None  # widget 坐标
+        self._rect_curr: Optional[tuple[int, int]] = None  # widget 坐标
 
     def attach_scroll_area(self, scroll: "QScrollArea") -> None:
         """让 label 知道它所在的 QScrollArea, 用于实现右键拖动 pan"""
@@ -589,8 +629,25 @@ class _ZoomImageLabel(QLabel):
         """
         self._zoom = max(1, int(zoom))
 
+    def set_mode(self, mode: str) -> None:
+        """切换交互模式. 'point'/'rect'/'readonly'."""
+        if mode not in ("point", "rect", "readonly"):
+            raise ValueError(f"未知 mode: {mode!r}, 必须是 point/rect/readonly")
+        self._mode = mode
+
+    def add_rect_marker(self, x1: float, y1: float, x2: float, y2: float) -> None:
+        """外部往图上加一个矩形标注 (原图浮点像素坐标). 给 readonly 预览用."""
+        xa, xb = (x1, x2) if x1 <= x2 else (x2, x1)
+        ya, yb = (y1, y2) if y1 <= y2 else (y2, y1)
+        self._rect_markers.append((xa, ya, xb, yb))
+        self.update()
+
     def clear_markers(self) -> None:
         self._markers.clear()
+        self._rect_markers.clear()
+        self._rect_press = None
+        self._rect_curr = None
+        self._rect_dragging = False
         self.update()
 
     def mousePressEvent(self, ev: QMouseEvent) -> None:
@@ -606,9 +663,19 @@ class _ZoomImageLabel(QLabel):
             ev.accept()
             return
         if ev.button() == Qt.LeftButton:
+            if self._mode == "readonly":
+                return  # readonly 不响应左键
             x_disp = int(ev.position().x())
             y_disp = int(ev.position().y())
-            # 存原图浮点像素坐标 (与 zoom 解耦), 切倍率时仍能定位
+            if self._mode == "rect":
+                # 矩形模式: 进入拖动状态, 不立刻 emit
+                self._rect_dragging = True
+                self._rect_press = (x_disp, y_disp)
+                self._rect_curr = (x_disp, y_disp)
+                self.update()
+                ev.accept()
+                return
+            # point 模式 (原行为): 存原图浮点像素坐标 + emit clicked
             z = max(1, self._zoom)
             self._markers.append((x_disp / z, y_disp / z))
             self.clicked.emit(x_disp, y_disp)
@@ -628,7 +695,12 @@ class _ZoomImageLabel(QLabel):
             sb_v.setValue(self._pan_anchor_scroll[1] - dy)
             ev.accept()
             return
-        # 非 pan 模式: emit hovered 给状态栏更新像素色信息
+        if self._rect_dragging:
+            # 矩形拖动中: 更新当前点, 触发预览矩形重绘
+            self._rect_curr = (int(ev.position().x()), int(ev.position().y()))
+            self.update()
+            return
+        # 非 pan / 非 rect-drag 模式: emit hovered 给状态栏更新像素色信息
         x = int(ev.position().x())
         y = int(ev.position().y())
         self.hovered.emit(x, y)
@@ -640,37 +712,90 @@ class _ZoomImageLabel(QLabel):
             self.setCursor(Qt.CrossCursor)
             ev.accept()
             return
+        if ev.button() == Qt.LeftButton and self._rect_dragging:
+            # 完成矩形框选
+            x0, y0 = self._rect_press
+            x1 = int(ev.position().x())
+            y1 = int(ev.position().y())
+            self._rect_dragging = False
+            self._rect_press = None
+            self._rect_curr = None
+            xa, xb = (x0, x1) if x0 <= x1 else (x1, x0)
+            ya, yb = (y0, y1) if y0 <= y1 else (y1, y0)
+            # 太小的框忽略 (<= 4 px), 视为误点
+            if (xb - xa) < 4 or (yb - ya) < 4:
+                self.update()
+                ev.accept()
+                return
+            z = max(1, self._zoom)
+            self._rect_markers.append((xa / z, ya / z, xb / z, yb / z))
+            self.rect_picked.emit(xa, ya, xb, yb)
+            self.update()
+            ev.accept()
+            return
         super().mouseReleaseEvent(ev)
 
     def paintEvent(self, ev) -> None:
         super().paintEvent(ev)
-        if not self._markers:
+        if not (self._markers or self._rect_markers or self._rect_dragging):
             return
         painter = QPainter(self)
-        pen = QPen(QColor(255, 40, 40), 2)
-        painter.setPen(pen)
         z = max(1, self._zoom)
-        # 半径随倍率适度增长: 1× 时 14, 6× 时 24, 大倍率下圈不会被像素淹没
-        radius = 12 + 2 * z
-        cross_gap = 3
-        cross_arm = radius // 2 + 2
-        for ox, oy in self._markers:
-            cx = int(round(ox * z))
-            cy = int(round(oy * z))
-            painter.drawEllipse(cx - radius, cy - radius, 2 * radius, 2 * radius)
-            # 中心十字 (留空隙不挡像素本身)
-            painter.drawLine(cx - cross_arm, cy, cx - cross_gap, cy)
-            painter.drawLine(cx + cross_gap, cy, cx + cross_arm, cy)
-            painter.drawLine(cx, cy - cross_arm, cx, cy - cross_gap)
-            painter.drawLine(cx, cy + cross_gap, cx, cy + cross_arm)
+
+        # 已落定矩形 (红色边框)
+        if self._rect_markers:
+            pen = QPen(QColor(255, 60, 60), 2, Qt.SolidLine)
+            painter.setPen(pen)
+            for i, (rx0, ry0, rx1, ry1) in enumerate(self._rect_markers):
+                wx0 = int(round(rx0 * z))
+                wy0 = int(round(ry0 * z))
+                wx1 = int(round(rx1 * z))
+                wy1 = int(round(ry1 * z))
+                painter.drawRect(wx0, wy0, wx1 - wx0, wy1 - wy0)
+                # 多个矩形累积时编号
+                if len(self._rect_markers) > 1:
+                    painter.drawText(wx0 + 4, wy0 + 16, f"#{i + 1}")
+
+        # 正在拖动的预览矩形 (蓝色虚线)
+        if self._rect_dragging and self._rect_press and self._rect_curr:
+            x0, y0 = self._rect_press
+            x1, y1 = self._rect_curr
+            xa, xb = (x0, x1) if x0 <= x1 else (x1, x0)
+            ya, yb = (y0, y1) if y0 <= y1 else (y1, y0)
+            pen = QPen(QColor(50, 130, 230), 2, Qt.DashLine)
+            painter.setPen(pen)
+            painter.drawRect(xa, ya, xb - xa, yb - ya)
+
+        # 点 marker (原行为不变)
+        if self._markers:
+            pen = QPen(QColor(255, 40, 40), 2)
+            painter.setPen(pen)
+            # 半径随倍率适度增长: 1× 时 14, 6× 时 24, 大倍率下圈不会被像素淹没
+            radius = 12 + 2 * z
+            cross_gap = 3
+            cross_arm = radius // 2 + 2
+            for ox, oy in self._markers:
+                cx = int(round(ox * z))
+                cy = int(round(oy * z))
+                painter.drawEllipse(cx - radius, cy - radius, 2 * radius, 2 * radius)
+                # 中心十字 (留空隙不挡像素本身)
+                painter.drawLine(cx - cross_arm, cy, cx - cross_gap, cy)
+                painter.drawLine(cx + cross_gap, cy, cx + cross_arm, cy)
+                painter.drawLine(cx, cy - cross_arm, cx, cy - cross_gap)
+                painter.drawLine(cx, cy + cross_gap, cx, cy + cross_arm)
 
 
 class ZoomedSnapshotPicker(QDialog):
     """
     放大截图 + 鼠标点选 子对话框 (放大/平移/marker 保留/中心锚点缩放)。
 
-    非模态。用户每点一次发 point_picked(nx, ny) 给主对话框, 主对话框处理点击
-    含义 (采样/反解/...)。
+    支持三种交互模式 (mode 构造参数, 默认 'point'):
+      · 'point'    左键单击采样, emit point_picked(nx, ny). 非模态用法不变.
+      · 'rect'     左键拖框, emit rect_picked(nx1, ny1, nx2, ny2).
+                   也可用 exec_for_rect() 一次性 modal 取一个矩形并返回.
+      · 'readonly' 不响应左键; 仅 zoom + 右键 pan + hover. 用于"预览已配置好的
+                   ROI/坐标"这类只读浏览场景. 调用方可用 add_rect_marker() 等
+                   在图上预先画好标注.
 
     可定制项 (供不同上下文复用):
       · show_recapture: True 时显示"重新截图"按钮; 反解工具等需要外部统一截图
@@ -679,6 +804,7 @@ class ZoomedSnapshotPicker(QDialog):
     """
 
     point_picked = Signal(float, float)  # 归一化坐标 (nx, ny) ∈ [0, 1]²
+    rect_picked = Signal(float, float, float, float)  # (nx1, ny1, nx2, ny2)
 
     # 缩放倍率范围 (1822×1058 在 6× 时约 277MB QPixmap，再大就吃内存)
     ZOOM_MIN = 1
@@ -686,6 +812,8 @@ class ZoomedSnapshotPicker(QDialog):
     ZOOM_DEFAULT = 2
 
     DEFAULT_PROMPT = "左键单击采样 | 右键拖动平移 | 滚轮垂直滚动 | 鼠标移到图上看像素色"
+    RECT_PROMPT = "左键拖出矩形采样 | 右键拖动平移 | 滚轮垂直滚动"
+    READONLY_PROMPT = "右键拖动平移 | 滚轮垂直滚动 | 鼠标移到图上看像素色"
 
     def __init__(
         self,
@@ -695,8 +823,11 @@ class ZoomedSnapshotPicker(QDialog):
         *,
         show_recapture: bool = True,
         prompt: Optional[str] = None,
+        mode: str = "point",
     ) -> None:
         super().__init__(parent, Qt.Dialog)
+        if mode not in ("point", "rect", "readonly"):
+            raise ValueError(f"未知 mode: {mode!r}")
         self.setWindowTitle("截图选点 - 放大查看")
         self.resize(960, 720)
 
@@ -704,9 +835,22 @@ class ZoomedSnapshotPicker(QDialog):
         self._orig_image: Image.Image = img
         self._zoom: int = self.ZOOM_DEFAULT
         self._show_recapture = show_recapture
-        self._default_prompt = prompt if prompt is not None else self.DEFAULT_PROMPT
+        self._mode = mode
+        if prompt is not None:
+            self._default_prompt = prompt
+        elif mode == "rect":
+            self._default_prompt = self.RECT_PROMPT
+        elif mode == "readonly":
+            self._default_prompt = self.READONLY_PROMPT
+        else:
+            self._default_prompt = self.DEFAULT_PROMPT
+
+        # exec_for_rect() 用: 拖完一个矩形后存起来, 然后 accept() 关闭对话框
+        self._captured_rect: Optional[tuple[float, float, float, float]] = None
 
         self._build_ui()
+        # 子部件创建后, 把 mode 同步给 label
+        self._img_label.set_mode(mode)
         self._refresh_image()
 
     # ---------------- 对外 ----------------
@@ -731,6 +875,40 @@ class ZoomedSnapshotPicker(QDialog):
         else:
             done = "  ✔ 已达上限" if count >= expected else ""
             self._record_label.setText(f"已记录: {count} / {expected}{done}")
+
+    def add_rect_marker(self, nx1: float, ny1: float, nx2: float, ny2: float) -> None:
+        """在图上预先画一个矩形标记 (归一化坐标). 用于 readonly 预览场景."""
+        w, h = self._orig_image.size
+        self._img_label.add_rect_marker(nx1 * w, ny1 * h, nx2 * w, ny2 * h)
+
+    def clear_markers(self) -> None:
+        """外部清空所有 markers (点 + 矩形)."""
+        self._img_label.clear_markers()
+
+    def captured_rect_norm(
+        self,
+    ) -> Optional[tuple[float, float, float, float]]:
+        """exec_for_rect() 用. 返回 None 表示用户没拖框就关掉了."""
+        return self._captured_rect
+
+    def exec_for_rect(self) -> Optional[tuple[float, float, float, float]]:
+        """便利方法: 以 modal 方式打开, 等用户拖完一个矩形后自动关闭, 返回归一化矩形.
+
+        用户没拖框就关掉对话框 → 返回 None.
+        只能在 mode='rect' 下调用.
+        """
+        if self._mode != "rect":
+            raise RuntimeError("exec_for_rect 只能在 mode='rect' 下调用")
+        # 在拖框释放时立刻 accept
+        self.rect_picked.connect(self._on_rect_picked_for_modal)
+        self.exec()
+        return self._captured_rect
+
+    def _on_rect_picked_for_modal(
+        self, nx1: float, ny1: float, nx2: float, ny2: float
+    ) -> None:
+        self._captured_rect = (nx1, ny1, nx2, ny2)
+        self.accept()
 
     # ---------------- UI ----------------
 
@@ -770,6 +948,9 @@ class ZoomedSnapshotPicker(QDialog):
         self._img_label.attach_scroll_area(self._scroll)  # 让 label 能驱动 pan
         self._img_label.clicked.connect(self._on_label_clicked)
         self._img_label.hovered.connect(self._on_label_hovered)
+        # rect_picked: widget 像素 (x1,y1,x2,y2) → 归一化 → emit 自身的 rect_picked,
+        # 屏蔽底层细节
+        self._img_label.rect_picked.connect(self._on_label_rect_picked)
         self._scroll.setWidget(self._img_label)
         root.addWidget(self._scroll, 1)
 
@@ -866,6 +1047,30 @@ class ZoomedSnapshotPicker(QDialog):
             ny,
         )
         self.point_picked.emit(nx, ny)
+
+    def _on_label_rect_picked(self, x1: int, y1: int, x2: int, y2: int) -> None:
+        # widget 像素 → 原图像素 → 归一化 (x1<x2 / y1<y2 由底层保证)
+        ow, oh = self._orig_image.size
+        nx1 = (x1 / self._zoom) / ow
+        ny1 = (y1 / self._zoom) / oh
+        nx2 = (x2 / self._zoom) / ow
+        ny2 = (y2 / self._zoom) / oh
+        # 夹紧到 [0,1] (放大后 widget 边缘可能超出图片)
+        nx1 = max(0.0, min(1.0, nx1))
+        ny1 = max(0.0, min(1.0, ny1))
+        nx2 = max(0.0, min(1.0, nx2))
+        ny2 = max(0.0, min(1.0, ny2))
+        log.info(
+            "放大窗框选: zoom=%d → 归一化矩形 (%.4f,%.4f)~(%.4f,%.4f) 大小 %.4f×%.4f",
+            self._zoom,
+            nx1,
+            ny1,
+            nx2,
+            ny2,
+            nx2 - nx1,
+            ny2 - ny1,
+        )
+        self.rect_picked.emit(nx1, ny1, nx2, ny2)
 
     def _on_label_hovered(self, x_disp: int, y_disp: int) -> None:
         ow, oh = self._orig_image.size
