@@ -1,8 +1,63 @@
 name: 帝陵刷怪
 loop_count: 1
-loop_interval: 0.65
+loop_interval: 0.2
 starting_map: 帝陵内部
 steps:
 - type: move
   path:
+  - [17, 17]
+  - [17, 16]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [17, 16]
+  - [18, 11]
+  - [19, 9]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [19, 9]
+  - [18, 4]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [18, 4]
+  - [14, 5]
+  - [12, 6]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [12, 6]
+  - [8, 4]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [8, 4]
+  - [4, 4]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [4, 4]
+  - [4, 8]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [4, 8]
+  - [4, 13]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [4, 13]
+  - [8, 12]
+  - [11, 12]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [11, 12]
+  - [11, 16]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [11, 16]
+  - [15, 18]
   - [17, 17]
