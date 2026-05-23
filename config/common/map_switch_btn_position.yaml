@@ -125,7 +125,6 @@ profiles:
         btn_offset_pixel: [11.93, 188.67]
         recorded_at_corner: SW
       华山: {}
-      返回洛阳: {}
       玛尔部落:
         map_size: [34, 29]
       帝陵:
@@ -134,3 +133,5 @@ profiles:
       帝陵内部:
         map_size: [23, 23]
         vision_size: 小
+      武神殿1层: {map_size_sum: 55, vision_size: 小}
+      武神殿2层: {}

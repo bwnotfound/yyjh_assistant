@@ -12,22 +12,24 @@
   2. 在游戏里把角色走到能"贴边"的位置 —— 越靠近地图屏幕边越好:
        走到屏幕**左**端 (W 激活) → 解 mh
        走到屏幕**右**端 (E 激活) → 解 mw
-       走到屏幕**下**端 (S 激活) → 解 mw+mh (参考校验)
+       走到屏幕**下**端 (S 激活) → 解 mw+mh (独立 sum 字段)
        走到屏幕**上**端 (N 激活) → 无信息
   3. 点 [取一次观测]:
        a. 工具截一帧 + OCR 取角色当前格坐标 (gx, gy)
        b. 弹放大窗, 点击"角色脚下中心"得屏幕实际位置 (px, py)
        c. solve_map_size_observation 反解出对应维度
-  4. 重复 3 直到 mw / mh 都解出 (或任一维度因路径不通无法观测).
+  4. 重复 3 直到所需维度都解出 (或任一维度因路径不通无法观测).
   5. 点 [应用到主对话框]:
-       未观测的维度填 999 (语义: 无穷大不限, 下游 compute_character_screen_pos
-       自动不激活该方向修正); 已观测的填四舍五入整数.
+       三个字段独立: 本次反解出哪个就填回主对话框对应 spinbox, 没反解的不动
+       (保持主对话框 spinbox 原值, 不再"填 999 占位").
 
 跨多次观测同一维度的策略: 取最新值 (与 view_area_solver 一致).
-S 观测的 sum 仅作参考显示, 不参与 mw/mh 候选 (无法独立分离).
+S 观测的 sum 现在是独立的 map_size_sum 字段 (LocationRecord.map_size_sum),
+runtime 里在完整 map_size 不可得时作为 fallback (只能修正 N/S 方向).
 
-返回值: dialog.exec() 返回 QDialog.Accepted 时, dialog.accepted_size 为
-(mw_int, mh_int); 取消则为 None.
+返回值: dialog.exec() 返回 QDialog.Accepted 时, dialog.accepted_outcome 为
+MapSizeSolverOutcome(mw, mh, sum_); 取消则为 None. 字段 None 表示本次未反解
+出该值, 调用方据此决定是否覆盖主对话框对应 spinbox.
 """
 
 from __future__ import annotations
@@ -96,6 +98,33 @@ class _PendingPick:
 # =============================================================================
 
 
+# =============================================================================
+# 应用结果 (返回给 MapRegistryDialog)
+# =============================================================================
+
+
+@dataclass
+class MapSizeSolverOutcome:
+    """
+    反解工具的最终输出. 三个字段独立可选, 调用方按字段是否为 None 决定是否
+    覆盖对应 LocationRecord 字段:
+      · mw   ≠ None → 反解出独立 w, 应用到 map_size 的 w 维
+      · mh   ≠ None → 反解出独立 h, 应用到 map_size 的 h 维
+      · sum_ ≠ None → 反解出 w+h, 应用到 map_size_sum 字段
+
+    一个观测最多同时提供 (mw + sum_) 或 (mh + sum_) 两个值 (X 轴 + Y 轴各一);
+    要同时拿到 mw 和 mh 需要 ≥2 次观测 (左右各贴一次).
+    """
+
+    mw: Optional[int] = None
+    mh: Optional[int] = None
+    sum_: Optional[int] = None
+
+    @property
+    def has_any(self) -> bool:
+        return self.mw is not None or self.mh is not None or self.sum_ is not None
+
+
 class MapSizeSolverDialog(QDialog):
     """
     反解 map_size 的交互工具.
@@ -106,12 +135,14 @@ class MapSizeSolverDialog(QDialog):
       vision_name      : 当前地图选定的视野档位名 (从 LocationRecord.vision_size 读)
       map_label        : 地图名 (仅显示用)
       initial_size     : 主对话框 spinbox 当前值 (mw, mh) 或 None;
-                         作为初始候选填充 (用户再观测可覆盖).
+                         作为初始候选 (本次未反解出来时回填, 但不会自动作为 outcome).
+      initial_sum      : 主对话框 sum spinbox 当前值 或 None; 同上.
 
     使用方式:
       dlg = MapSizeSolverDialog(mumu, mp, "小", "黑水沟", initial_size=(0, 0))
       if dlg.exec() == QDialog.Accepted:
-          mw, mh = dlg.accepted_size  # tuple[int, int], 未观测维度为 999
+          outcome = dlg.accepted_outcome  # MapSizeSolverOutcome
+          # outcome.mw / mh / sum_ 任一非 None 就独立写到对应字段
     """
 
     def __init__(
@@ -121,11 +152,12 @@ class MapSizeSolverDialog(QDialog):
         vision_name: str,
         map_label: str,
         initial_size: Optional[tuple[int, int]] = None,
+        initial_sum: Optional[int] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"反解 map_size — {map_label}")
-        self.resize(620, 660)
+        self.resize(620, 700)
 
         self._mumu = mumu
         self._movement_profile = movement_profile
@@ -144,19 +176,22 @@ class MapSizeSolverDialog(QDialog):
         self._mw_plus_mh_latest: Optional[float] = None
         self._observations: list[_Observation] = []
 
-        # 初始 spinbox 值: 若 != 0 则视为已有值, 显示但不进 observations
+        # 初始 spinbox 值: 若 != 0 则视为已有值, 显示作为参考但不进 observations
         # (避免被用户当作"上次反解的结果")
         self._initial_mw: Optional[int] = None
         self._initial_mh: Optional[int] = None
+        self._initial_sum: Optional[int] = None
         if initial_size is not None:
             mw0, mh0 = initial_size
             if mw0 > 0:
                 self._initial_mw = int(mw0)
             if mh0 > 0:
                 self._initial_mh = int(mh0)
+        if initial_sum is not None and initial_sum > 0:
+            self._initial_sum = int(initial_sum)
 
         # 应用结果 (exec accept 后由调用方读)
-        self.accepted_size: Optional[tuple[int, int]] = None
+        self.accepted_outcome: Optional[MapSizeSolverOutcome] = None
 
         # OCR 链路 lazy
         self._template_ocr: Optional[TemplateOCR] = None
@@ -211,9 +246,9 @@ class MapSizeSolverDialog(QDialog):
             "几何: 地图相对屏幕顺时针 45°, 4 个屏幕方位各对应 1 个地图维度:\n"
             "  · 走到屏幕**左**端 (玩家偏左, dx<0) → 解 mh\n"
             "  · 走到屏幕**右**端 (玩家偏右, dx>0) → 解 mw\n"
-            "  · 走到屏幕**下**端 (玩家偏下, dy>0) → 解 mw+mh (参考校验, 无法单独分离)\n"
+            "  · 走到屏幕**下**端 (玩家偏下, dy>0) → 解 mw+mh (独立 sum 字段)\n"
             "  · 走到屏幕**上**端 (玩家偏上, dy<0) → 无信息 (公式不含 mw/mh)\n"
-            "应用时未观测的维度填 999 (= 该方向无穷大, 不做贴边修正)."
+            "应用时三个维度独立: 每个维度本次有反解就填回对应 spinbox, 没反解的不动."
         )
         tip.setWordWrap(True)
         tip.setStyleSheet("color: #555; font-size: 11px;")
@@ -295,124 +330,65 @@ class MapSizeSolverDialog(QDialog):
 
     def _refresh_state_display(self) -> None:
         """
-        显示规则:
-          - 已观测维度: 显示浮点 + 四舍五入值 + "(本次反解)" 标记
-          - sum 推算出的维度: 显示推算结果 + "(S 推算)" 标记
-          - 仅有主对话框初值: 显示初值 + "(初值)" 标记
-          - 都没有: 显示 999 + "(默认)" 标记
-        额外行: 如果有 mw_plus_mh, 展示 sum 校验对比.
+        显示规则 (三个维度独立, 不再做"未观测填 999"那种回退):
+          - 有 latest (本次反解): 显示浮点 + 四舍五入值 + "(本次反解)"
+          - 没 latest 但有 initial: 显示 initial + "(主对话框初值)"
+          - 都没有: 显示 "未观测"
+        各维度独立, 不互相推算. 想要"E + S 推 mh"这种, 手动算或多走一次 W.
         """
-        mw_int, mh_int, mw_src, mh_src = self._resolve_both()
 
-        def _line(latest: Optional[float], int_v: int, src: str, label: str) -> str:
+        def _line(latest: Optional[float], initial: Optional[int], label: str) -> str:
             if latest is not None:
-                # 本次反解: 浮点 + 圆括号四舍五入
-                return f"{label} = {latest:.3f} (round → {int_v})  [{src}]"
-            return f"{label} = {int_v}  [{src}]"
+                return (
+                    f"{label} = {latest:.3f} (round → {int(round(latest))})  [本次反解]"
+                )
+            if initial is not None:
+                return f"{label} = {initial}  [主对话框初值, 不会被应用]"
+            return f"{label} = —  [未观测]"
 
         lines = [
-            _line(self._mw_latest, mw_int, mw_src, "mw"),
-            _line(self._mh_latest, mh_int, mh_src, "mh"),
+            _line(self._mw_latest, self._initial_mw, "mw"),
+            _line(self._mh_latest, self._initial_mh, "mh"),
+            _line(self._mw_plus_mh_latest, self._initial_sum, "w+h (sum)"),
         ]
 
-        # sum 校验行: 拿"非推算 effective" (latest 优先, 其次非占位 initial) 与
-        # sum 对比. 故意不用 _resolve_both 的输出, 因为 _resolve_both 里 mw 可能
-        # 就是从 sum 推算来的, 拿它再去校验 sum 是循环论证.
-        if self._mw_plus_mh_latest is not None:
-            mw_eff = self._effective_value(self._mw_latest, self._initial_mw)
-            mh_eff = self._effective_value(self._mh_latest, self._initial_mh)
-            sum_check = ""
-            if mw_eff is not None and mh_eff is not None:
-                expected = mw_eff + mh_eff
-                diff = self._mw_plus_mh_latest - expected
-                tag = "✓ 一致" if abs(diff) <= 2 else "⚠ 偏差较大"
-                sum_check = f"  vs 已知 mw+mh={expected:.1f} (Δ={diff:+.2f}) {tag}"
-            lines.append(f"S 校验: mw+mh ≈ {self._mw_plus_mh_latest:.3f}{sum_check}")
+        # 如果三个本次反解都有, 显示一致性检查
+        if (
+            self._mw_latest is not None
+            and self._mh_latest is not None
+            and self._mw_plus_mh_latest is not None
+        ):
+            expected = self._mw_latest + self._mh_latest
+            diff = self._mw_plus_mh_latest - expected
+            tag = "✓ 一致" if abs(diff) <= 2 else "⚠ 偏差较大"
+            lines.append(
+                f"一致性: mw+mh={expected:.2f} vs sum={self._mw_plus_mh_latest:.2f} "
+                f"(Δ={diff:+.2f}) {tag}"
+            )
 
         lines.append(f"观测次数: {len(self._observations)}")
         self._state_label.setText("\n".join(lines))
 
     # -------------------------------------------------------------------------
-    # 回退链解析: 给一个维度, 按 [本次反解 > sum 推算 > 主对话框初值 > 999] 顺序
-    # 解出最终整数值. 同时被 _refresh_state_display 和 _on_apply 复用, 保证
-    # 屏上展示的预览值 == 应用时真正写入的值.
+    # 收集本次 outcome: 每个维度独立, "本次反解"才会进 outcome, 初值不会.
+    # 给 _on_apply 调用.
     # -------------------------------------------------------------------------
 
-    def _effective_value(
-        self, latest: Optional[float], initial: Optional[int]
-    ) -> Optional[float]:
-        """
-        给定一维度, 返回"非推算"的有效估计 (本次反解 > 主对话框非占位初值).
-        用于另一维度的 sum 推算输入. 999 视为占位 (用户来反解工具说明想覆盖 999),
-        不参与推算约束.
-        """
-        if latest is not None:
-            return float(latest)
-        if initial is not None and initial < 999:
-            return float(initial)
-        return None
-
-    def _resolve_dim(
-        self,
-        latest: Optional[float],
-        initial: Optional[int],
-        sum_v: Optional[float],
-        other_eff: Optional[float],
-        label: str,  # "mw" 或 "mh"
-        other_label: str,  # 与 label 互补
-    ) -> tuple[int, str]:
-        """
-        按回退链路解出 (int_value, src_label):
-          1. latest      → "本次反解"
-          2. sum 推算: sum_v - other_eff (前提两者都非 None, 推算结果合法)
-                         → "S 推算 (...)"
-          3. initial < 999 → "主对话框初值"
-          4. initial == 999 → 视为占位但允许沿用 ("主对话框初值 (999 占位)")
-          5. 默认 999     → "未观测 (默认 999)"
-        """
-        if latest is not None:
-            return int(round(latest)), "本次反解"
-        if sum_v is not None and other_eff is not None:
-            inferred = sum_v - other_eff
-            if 0 < inferred <= 999:
-                return (
-                    int(round(inferred)),
-                    f"S 推算 ({label} = sum - {other_label} "
-                    f"= {sum_v:.2f} - {other_eff:.2f} = {inferred:.2f})",
-                )
-        if initial is not None:
-            if initial < 999:
-                return initial, "主对话框初值"
-            else:  # initial == 999
-                return 999, "主对话框初值 (999 占位)"
-        return 999, "未观测 (默认 999)"
-
-    def _resolve_both(self) -> tuple[int, int, str, str]:
-        """同时解出 mw 和 mh, 返回 (mw, mh, mw_src, mh_src)."""
-        # Step 1: 算各自的 "非推算 effective" (用于另一维的 sum 推算输入).
-        # 注意 effective 不能用 _resolve_dim 的输出 (那个已含推算, 会让两维互相
-        # 推算造成循环), 所以单独计算.
-        mw_eff = self._effective_value(self._mw_latest, self._initial_mw)
-        mh_eff = self._effective_value(self._mh_latest, self._initial_mh)
-
-        # Step 2: 各自走完整回退链
-        mw_int, mw_src = self._resolve_dim(
-            self._mw_latest,
-            self._initial_mw,
-            self._mw_plus_mh_latest,
-            mh_eff,
-            "mw",
-            "mh",
-        )
-        mh_int, mh_src = self._resolve_dim(
-            self._mh_latest,
-            self._initial_mh,
-            self._mw_plus_mh_latest,
-            mw_eff,
-            "mh",
-            "mw",
-        )
-        return mw_int, mh_int, mw_src, mh_src
+    def _build_outcome(self) -> MapSizeSolverOutcome:
+        out = MapSizeSolverOutcome()
+        if self._mw_latest is not None:
+            v = int(round(self._mw_latest))
+            if 1 <= v <= 999:
+                out.mw = v
+        if self._mh_latest is not None:
+            v = int(round(self._mh_latest))
+            if 1 <= v <= 999:
+                out.mh = v
+        if self._mw_plus_mh_latest is not None:
+            v = int(round(self._mw_plus_mh_latest))
+            if 1 <= v <= 1998:
+                out.sum_ = v
+        return out
 
     # -------------------------------------------------------------------------
     # 取观测
@@ -555,49 +531,67 @@ class MapSizeSolverDialog(QDialog):
 
     def _on_apply(self) -> None:
         """
-        组装最终 (mw_int, mh_int) 写回主对话框 spinbox.
-        回退链路统一走 _resolve_both: 本次反解 > sum 推算 > 主对话框初值 > 999.
+        组装 MapSizeSolverOutcome 写回主对话框. 三个字段独立: 本次反解出哪个就
+        填哪个, 没反解出来的字段保持空 (主对话框 spinbox 维持原值).
         """
-        mw_int, mh_int, mw_src, mh_src = self._resolve_both()
+        outcome = self._build_outcome()
 
-        # 判定本次工具用得有不有效:
-        #   "本次反解" / "S 推算" 都算有效结果; 仅"主对话框初值"或"默认 999"
-        #   说明用户什么也没观出来, 弹 warning.
-        def _is_effective(src: str) -> bool:
-            return src.startswith("本次反解") or src.startswith("S 推算")
-
-        if not _is_effective(mw_src) and not _is_effective(mh_src):
-            ans = QMessageBox.question(
-                self,
-                "无有效反解",
-                f"本次未反解出任何 mw/mh 候选 (含 sum 推算).\n"
-                f"将填入: mw={mw_int} ({mw_src}), mh={mh_int} ({mh_src}).\n\n"
-                f"确认应用?",
-            )
-            if ans != QMessageBox.Yes:
-                return
-
-        # 一致性检查: spinbox 范围 0~999 (见 map_registry_dialog._build_detail_widget)
-        if not (1 <= mw_int <= 999 and 1 <= mh_int <= 999):
+        if not outcome.has_any:
             QMessageBox.warning(
                 self,
-                "数值越界",
-                f"mw={mw_int}, mh={mh_int} 不在 [1, 999] 范围内, 拒绝应用. "
-                f"请重新观测或检查依赖参数.",
+                "无有效反解",
+                "本次未反解出任何 mw / mh / sum.\n" "请先取观测 (走到屏幕边缘) 再应用.",
             )
             return
 
+        # 越界检查 (_build_outcome 已过滤过, 这里再确认一次)
+        for label, v, lo, hi in (
+            ("mw", outcome.mw, 1, 999),
+            ("mh", outcome.mh, 1, 999),
+            ("sum", outcome.sum_, 1, 1998),
+        ):
+            if v is not None and not (lo <= v <= hi):
+                QMessageBox.warning(
+                    self,
+                    "数值越界",
+                    f"{label}={v} 不在 [{lo}, {hi}] 范围内, 拒绝应用. "
+                    f"请重新观测或检查依赖参数.",
+                )
+                return
+
+        # 一致性提示 (本次同时有 mw + mh + sum 时)
+        consistency_warn = ""
+        if (
+            outcome.mw is not None
+            and outcome.mh is not None
+            and outcome.sum_ is not None
+        ):
+            derived = outcome.mw + outcome.mh
+            if abs(derived - outcome.sum_) >= 2:
+                consistency_warn = (
+                    f"\n\n⚠ 一致性检查: mw+mh={derived} 与 sum={outcome.sum_} "
+                    f"相差 {abs(derived - outcome.sum_)} 格. 仍将按反解结果应用, "
+                    f"主对话框会同时存两份, runtime 以 map_size 为准."
+                )
+
+        parts = []
+        if outcome.mw is not None:
+            parts.append(f"mw = {outcome.mw}")
+        if outcome.mh is not None:
+            parts.append(f"mh = {outcome.mh}")
+        if outcome.sum_ is not None:
+            parts.append(f"sum = {outcome.sum_}")
         msg = (
-            f"将填回主对话框 spinbox:\n"
-            f"  mw = {mw_int}  ({mw_src})\n"
-            f"  mh = {mh_int}  ({mh_src})\n\n"
-            f"主对话框需要点「保存到 YAML」才会真正落盘. 确认?"
+            "将填回主对话框 spinbox (仅以下字段, 其它保持原值):\n  "
+            + "\n  ".join(parts)
+            + consistency_warn
+            + "\n\n主对话框需要点「保存到 YAML」才会真正落盘. 确认?"
         )
         ans = QMessageBox.question(self, "确认应用", msg)
         if ans != QMessageBox.Yes:
             return
 
-        self.accepted_size = (mw_int, mh_int)
+        self.accepted_outcome = outcome
         self.accept()
 
     # -------------------------------------------------------------------------

@@ -841,7 +841,8 @@ MovementProfile = MovementConfig
 
 def compute_character_screen_pos(
     pre_pos: tuple[int, int],
-    map_size: tuple[int, int],
+    map_size: Optional[tuple[int, int]],
+    map_size_sum: Optional[int],
     block_size: tuple[float, float],
     character_pos: tuple[float, float],
     view_area: tuple[float, float, float, float],
@@ -876,39 +877,66 @@ def compute_character_screen_pos(
 
     Args:
         pre_pos: 玩家当前格 (gx, gy)
-        map_size: 地图格数 (mw, mh)
+        map_size: 地图格数 (mw, mh) 完整版. 没有则传 None, 此时若 map_size_sum
+                  给定, 函数会退化到"只做 N+S 方向修正", W/E 跳过 (因为公式各自
+                  需要单独的 mh / mw, sum-only 提供不出).
+        map_size_sum: mw+mh 的和. 仅 map_size 为 None 时使用, 作为 fallback;
+                  map_size 给定时这个参数被忽略 (从 map_size 推出真实和).
         block_size: 一格在屏幕上的归一化尺寸 (bw, bh)
         character_pos: 无约束时玩家屏幕中心 (cx, cy), 不一定等于 view_area 中心
         view_area: 屏幕可视区域 (vx0, vy0, vx1, vy1)
 
     Returns:
-        玩家在屏幕上的归一化位置 (px, py)
+        玩家在屏幕上的归一化位置 (px, py). 两个尺寸字段都为 None 时返回 character_pos.
     """
     gx, gy = pre_pos
-    mw, mh = map_size
     bw, bh = block_size
     cx, cy = character_pos
     vx0, vy0, vx1, vy1 = view_area
 
-    if not (0 <= gx <= mw and 0 <= gy <= mh):
-        log.warning(
-            "compute_character_screen_pos: pre_pos=(%d, %d) 超出 "
-            "map_size=(%d, %d) — 请检查 map_registry 里该地图的 map_size 配置。"
-            "本次返回 character_pos=%s, 不做贴边修正。",
-            gx,
-            gy,
-            mw,
-            mh,
-            character_pos,
-        )
+    # 完全没尺寸信息: 视为"路径不触边", 不做任何修正
+    if map_size is None and map_size_sum is None:
         return character_pos
 
-    n_dist = (gx + gy) * bh / 2
-    s_dist = (mw + mh - gx - gy) * bh / 2
-    w_dist = (gx + mh - gy) * bw / 2
-    e_dist = (mw - gx + gy) * bw / 2
+    # 用 map_size 优先, 推出真实 sum; 否则只有 sum 可用
+    if map_size is not None:
+        mw, mh = map_size
+        eff_sum = mw + mh
+        # 完整边界检查
+        if not (0 <= gx <= mw and 0 <= gy <= mh):
+            log.warning(
+                "compute_character_screen_pos: pre_pos=(%d, %d) 超出 "
+                "map_size=(%d, %d) — 请检查 map_registry 里该地图的 map_size 配置。"
+                "本次返回 character_pos=%s, 不做贴边修正。",
+                gx,
+                gy,
+                mw,
+                mh,
+                character_pos,
+            )
+            return character_pos
+    else:
+        mw = None
+        mh = None
+        eff_sum = map_size_sum
+        # sum-only 边界检查: gx+gy 应落在 [0, sum] 内 (这是 N-S 对角的合法范围)
+        if not (0 <= gx + gy <= eff_sum):
+            log.warning(
+                "compute_character_screen_pos: pre_pos=(%d, %d) 的 gx+gy=%d 超出 "
+                "map_size_sum=%d — 请检查 map_registry 里该地图的 map_size_sum 配置。"
+                "本次返回 character_pos=%s, 不做贴边修正。",
+                gx,
+                gy,
+                gx + gy,
+                eff_sum,
+                character_pos,
+            )
+            return character_pos
 
-    # Y 方向: 检查 N/S 谁在 view_area 内激活, 推 py 让它贴边
+    # Y 方向只用 sum (S) 或不用任何 (N), 所以两种模式都能算
+    n_dist = (gx + gy) * bh / 2
+    s_dist = (eff_sum - gx - gy) * bh / 2
+
     py = cy
     n_active = n_dist < cy - vy0
     s_active = s_dist < vy1 - cy
@@ -927,24 +955,29 @@ def compute_character_screen_pos(
     elif s_active:
         py = vy1 - s_dist
 
-    # X 方向: 同理 W/E
+    # X 方向: 需要单独的 mw / mh. sum-only 模式没有, 直接跳过 (px 保持 cx).
     px = cx
-    w_active = w_dist < cx - vx0
-    e_active = e_dist < vx1 - cx
-    if w_active and e_active:
-        log.warning(
-            "compute_character_screen_pos: W+E 同时激活 (w_dist=%.4f, e_dist=%.4f, "
-            "view_area x=[%.4f, %.4f]).",
-            w_dist,
-            e_dist,
-            vx0,
-            vx1,
-        )
-        px = ((vx0 + w_dist) + (vx1 - e_dist)) / 2
-    elif w_active:
-        px = vx0 + w_dist
-    elif e_active:
-        px = vx1 - e_dist
+    if mw is not None and mh is not None:
+        w_dist = (gx + mh - gy) * bw / 2
+        e_dist = (mw - gx + gy) * bw / 2
+
+        w_active = w_dist < cx - vx0
+        e_active = e_dist < vx1 - cx
+        if w_active and e_active:
+            log.warning(
+                "compute_character_screen_pos: W+E 同时激活 (w_dist=%.4f, e_dist=%.4f, "
+                "view_area x=[%.4f, %.4f]).",
+                w_dist,
+                e_dist,
+                vx0,
+                vx1,
+            )
+            px = ((vx0 + w_dist) + (vx1 - e_dist)) / 2
+        elif w_active:
+            px = vx0 + w_dist
+        elif e_active:
+            px = vx1 - e_dist
+    # else: 只有 sum, X 方向无信息可解, 维持 px = cx
 
     return (px, py)
 

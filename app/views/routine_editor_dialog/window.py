@@ -298,6 +298,57 @@ class RoutineEditorDialog(QDialog):
         except Exception as e:
             log.warning("加载 movement_profile 失败: %s", e)
 
+    def _refresh_known_maps(self) -> None:
+        """
+        重新读 map_registry, 刷新 _known_map_locations / _recorded_map_locations,
+        并同步 starting_map 下拉. 用于"在 MapRegistryDialog 添加了新地图后切回
+        routine 编辑器"场景: 主窗口缓存了 dialog 实例, __init__ 只跑一次,
+        所以光靠 _load_side_data (只在 __init__ 调) 看不到新地图. showEvent
+        每次显示都调这里, 确保下拉是最新的.
+
+        注意: 步骤里的 at_map / enter_map / travel.to 下拉是在用户点击该步骤时
+        惰性创建的, 它们直接读 self._known_map_locations, 所以这里更新完它们
+        下次创建时自动用新列表. 不需要遍历所有步骤刷新.
+        """
+        try:
+            map_reg = MapRegistry.load(MAP_REGISTRY_PATH)
+            key = f"{self._mumu.device_w}x{self._mumu.device_h}"
+            prof = map_reg.profiles.get(key)
+            if prof:
+                self._known_map_locations = sorted(prof.locations.keys())
+                self._map_locations = self._known_map_locations
+                self._recorded_map_locations = sorted(
+                    name for name, rec in prof.locations.items() if rec.is_recorded
+                )
+            else:
+                # 没 profile 不动现有列表 (避免显示窗口时把已配的下拉清空)
+                return
+        except Exception as e:
+            log.warning("刷新地图列表失败: %s", e)
+            return
+
+        # 重填 starting_map 下拉, 保留当前选中值. 若新列表不含该值,
+        # _populate_map_combo 会把它显示为带 "(未录入)" 后缀的项.
+        if self._routine is not None:
+            self._suspend_dirty = True
+            try:
+                self._populate_map_combo(
+                    self._starting_map_combo,
+                    self._routine.starting_map,
+                    with_empty=True,
+                )
+            finally:
+                self._suspend_dirty = False
+
+    def showEvent(self, event) -> None:
+        """每次显示对话框时刷新地图列表 (主窗口缓存 dialog 实例, __init__ 只跑一次)"""
+        super().showEvent(event)
+        # 跳过首次 show: __init__ 已经 _load_side_data 过, 不重复
+        if getattr(self, "_first_show_done", False):
+            self._refresh_known_maps()
+        else:
+            self._first_show_done = True
+
     # ========================================================================
     # OCR 链路
     # ========================================================================

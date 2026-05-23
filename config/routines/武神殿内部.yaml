@@ -1,0 +1,46 @@
+name: 武神殿内部
+loop_count: 1
+loop_interval: 0.0
+starting_map: 武神殿1层
+steps:
+- type: move
+  path:
+  - [24, 26]
+  - [22, 20]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [22, 20]
+  - [-1, -1]
+  - [18, 20]
+  - [-1, -1]
+  - [18, 16]
+  - [17, 13]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [17, 13]
+  - [15, 9]
+  - [11, 10]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [11, 10]
+  - [8, 11]
+  - [6, 10]
+- {type: sleep, seconds: 0.0, preset: travel_transition}
+- type: move
+  at_map: 武神殿2层
+  path:
+  - [64, 26]
+  - [62, 26]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [62, 26]
+  - [59, 25]
+- {type: sleep, seconds: 0.0, preset: 打怪}
+- type: move
+  path:
+  - [59, 25]
+  - [53, 25]

@@ -113,7 +113,13 @@ class LocationRecord:
     recorded_at_corner: Optional[Corner] = None  # 录入时贴的角
 
     # ── 地图几何属性（与分辨率无关，但放在 profile 里方便整体编辑） ──
-    map_size: Optional[tuple[int, int]] = None  # (width, height) 地图格数
+    map_size: Optional[tuple[int, int]] = None  # (width, height) 地图格数，完整版
+    # 地图维度和 w+h. 在完整 map_size 不可得 (够不到屏幕左/右端无法独立反解 mw/mh)
+    # 时作为 fallback: 用它可以做 N/S 方向的贴边修正 (S 公式只用 mw+mh, N 公式不用
+    # 任何 map 维度), 但 W/E 方向需要单独的 mw 或 mh, sum-only 下 W/E 修正被跳过.
+    # map_size 在场时这个字段不再被运行时使用 (effective_size_sum 优先 map_size),
+    # 但仍允许独立存储 (例如用户先反解出 sum, 后续才补全 mw/mh, 这中间可以并存).
+    map_size_sum: Optional[int] = None  # w + h
     vision_size: Optional[str] = None  # "小" / "中" / "大"
 
     @property
@@ -121,6 +127,21 @@ class LocationRecord:
         return (
             self.icon_on_bigmap_pixel is not None and self.btn_offset_pixel is not None
         )
+
+    @property
+    def effective_size_sum(self) -> Optional[int]:
+        """
+        运行时取"有效的 w+h": 优先用完整 map_size 推出 mw+mh, 否则返回 map_size_sum.
+        两者都没有则返回 None (调用方需把"无尺寸信息"当成"路径不会触边", 跳过修正).
+        """
+        if self.map_size is not None:
+            return self.map_size[0] + self.map_size[1]
+        return self.map_size_sum
+
+    @property
+    def has_any_size_info(self) -> bool:
+        """有 map_size 或 map_size_sum 任一就返回 True."""
+        return self.map_size is not None or self.map_size_sum is not None
 
     def to_dict(self) -> dict:
         d: dict = {}
@@ -138,6 +159,8 @@ class LocationRecord:
             d["recorded_at_corner"] = self.recorded_at_corner.value
         if self.map_size is not None:
             d["map_size"] = list(self.map_size)
+        if self.map_size_sum is not None:
+            d["map_size_sum"] = int(self.map_size_sum)
         if self.vision_size is not None:
             d["vision_size"] = self.vision_size
         return d
@@ -148,11 +171,13 @@ class LocationRecord:
         btn = d.get("btn_offset_pixel")
         corner_raw = d.get("recorded_at_corner")
         map_size_raw = d.get("map_size")
+        map_size_sum_raw = d.get("map_size_sum")
         return cls(
             icon_on_bigmap_pixel=tuple(icon) if icon else None,
             btn_offset_pixel=tuple(btn) if btn else None,
             recorded_at_corner=Corner(corner_raw) if corner_raw else None,
             map_size=(tuple(map_size_raw) if map_size_raw else None),
+            map_size_sum=(int(map_size_sum_raw) if map_size_sum_raw else None),
             vision_size=d.get("vision_size"),
         )
 

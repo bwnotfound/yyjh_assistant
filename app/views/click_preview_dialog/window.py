@@ -307,19 +307,24 @@ class ClickPreviewDialog(QDialog):
         self._tile_src_w = _wrap(src_row)
         form.addRow("起点格:", self._tile_src_w)
 
-        # 当前地图（adaptive 必填且必须有 map_size；手动 manual_tile 可选，
-        # 没选/选了无 map_size 的退化为不做贴边修正）
-        # 列出所有 location（含没 map_size 的，加 "(无 map_size)" 后缀），
+        # 当前地图（adaptive 必填且必须有 map_size 或 map_size_sum 任一；
+        # 手动 manual_tile 可选，没选/选了完全无尺寸信息的退化为不做贴边修正）
+        # 列出所有 location（含没尺寸的，加 "(无 map_size)" 后缀），
         # 这样自适应模式下选错了能在截图前被弹窗拦下，符合"提醒先设置 map_size"语义。
         map_row = QHBoxLayout()
         self._tile_map_combo = QComboBox()
         self._tile_map_combo.addItem("(不指定)", None)
         if self._map_profile is not None:
             for name, rec in sorted(self._map_profile.locations.items()):
-                # 跳过纯占位项（DEFAULT_LOCATIONS 里既无录入信息也无 map_size 的）
-                if not rec.is_recorded and rec.map_size is None:
+                # 跳过纯占位项（既未录入也没任何尺寸信息）
+                if not rec.is_recorded and not rec.has_any_size_info:
                     continue
-                suffix = "" if rec.map_size is not None else "  (无 map_size)"
+                if rec.map_size is not None:
+                    suffix = ""
+                elif rec.map_size_sum is not None:
+                    suffix = f"  (仅 sum={rec.map_size_sum})"
+                else:
+                    suffix = "  (无 map_size)"
                 self._tile_map_combo.addItem(f"{name}{suffix}", name)
         self._tile_map_combo.currentIndexChanged.connect(
             lambda _: self._refresh_map_size_label()
@@ -378,12 +383,17 @@ class ClickPreviewDialog(QDialog):
             self._tile_map_size_label.setText("")
             return
         rec = self._map_profile.locations.get(name)
-        if rec is None or rec.map_size is None:
+        if rec is None or not rec.has_any_size_info:
             self._tile_map_size_label.setText("(未配 map_size)")
             return
-        self._tile_map_size_label.setText(
-            f"map_size: {rec.map_size[0]} × {rec.map_size[1]}"
-        )
+        if rec.map_size is not None:
+            self._tile_map_size_label.setText(
+                f"map_size: {rec.map_size[0]} × {rec.map_size[1]}"
+            )
+        else:
+            self._tile_map_size_label.setText(
+                f"仅 sum: w+h={rec.map_size_sum} (W/E 不修正)"
+            )
 
     # =========================================================================
     # 解析输入 → 归一化坐标
@@ -479,8 +489,8 @@ class ClickPreviewDialog(QDialog):
         self, spec: VisionSpec
     ) -> Optional[tuple[float, float, str]]:
         """
-        Adaptive 分支：选定地图必须有 map_size；OCR 取当前坐标 → 贴边修正后
-        作为投影基准。一次截图同时喂 OCR 和后续标注，避免角色位移。
+        Adaptive 分支：选定地图必须有 map_size 或 map_size_sum 任一；OCR 取当前
+        坐标 → 贴边修正后作为投影基准。一次截图同时喂 OCR 和后续标注，避免角色位移。
 
         失败已弹错，返回 None。
         """
@@ -498,16 +508,17 @@ class ClickPreviewDialog(QDialog):
             if self._map_profile is not None
             else None
         )
-        if rec is None or rec.map_size is None:
+        if rec is None or not rec.has_any_size_info:
             QMessageBox.warning(
                 self,
                 "缺少 map_size",
-                f"地图「{map_name}」尚未配置 map_size。\n\n"
-                "请先在主界面「添加地图信息」里录入 map_size，"
+                f"地图「{map_name}」尚未配置 map_size 或 map_size_sum。\n\n"
+                "请先在主界面「添加地图信息」里录入尺寸信息，"
                 "或关闭「自适应地图」检查项后使用手动基准。",
             )
             return None
-        map_size = rec.map_size
+        map_size = rec.map_size  # 可能为 None (sum-only 模式)
+        map_size_sum = rec.map_size_sum
 
         # 一次截图同时给 OCR 和后续标注用
         try:
@@ -543,16 +554,18 @@ class ClickPreviewDialog(QDialog):
             return None
 
         gx, gy = coord
-        cx, cy = self._character_screen_pos((gx, gy), spec, map_size)
-        base_label = (
-            f"基准=自适应OCR({gx},{gy}) " f"on {map_name}({map_size[0]}×{map_size[1]})"
-        )
+        cx, cy = self._character_screen_pos((gx, gy), spec, map_size, map_size_sum)
+        if map_size is not None:
+            size_label = f"{map_size[0]}×{map_size[1]}"
+        else:
+            size_label = f"sum={map_size_sum}"
+        base_label = f"基准=自适应OCR({gx},{gy}) " f"on {map_name}({size_label})"
         log.info(
-            "adaptive: OCR=(%d, %d), map=%s%s, base=(%.4f, %.4f)",
+            "adaptive: OCR=(%d, %d), map=%s [%s], base=(%.4f, %.4f)",
             gx,
             gy,
             map_name,
-            map_size,
+            size_label,
             cx,
             cy,
         )
@@ -574,11 +587,13 @@ class ClickPreviewDialog(QDialog):
         sy = self._tile_src_y.value()
         map_name = self._tile_map_combo.currentData()
         map_size: Optional[tuple[int, int]] = None
+        map_size_sum: Optional[int] = None
         if map_name and self._map_profile is not None:
             rec = self._map_profile.locations.get(map_name)
             if rec is not None:
                 map_size = rec.map_size
-        cx, cy = self._character_screen_pos((sx, sy), spec, map_size)
+                map_size_sum = rec.map_size_sum
+        cx, cy = self._character_screen_pos((sx, sy), spec, map_size, map_size_sum)
         base_label = f"基准=起点格({sx},{sy}) on {map_name or '无地图(无贴边修正)'}"
         return (cx, cy, base_label)
 
@@ -587,24 +602,29 @@ class ClickPreviewDialog(QDialog):
         pre_pos: tuple[int, int],
         vision: VisionSpec,
         map_size: Optional[tuple[int, int]],
+        map_size_sum: Optional[int] = None,
     ) -> tuple[float, float]:
         """
         分发: 配了 map_view_area 用几何算法 (compute_character_screen_pos),
         否则回退到 _character_screen_pos_legacy (与 mover.Mover 同款的
         vision_delta_limit 经验算法)。
 
-        map_size=None 时不做贴边修正，返回 character_pos。
+        map_size 和 map_size_sum 都为 None 时不做贴边修正，返回 character_pos。
+        sum-only 时只能走几何算法 (legacy 经验算法需要完整 map_size).
         """
         assert self._movement_profile is not None
         cp = self._movement_profile.character_pos
-        if map_size is None:
+        if map_size is None and map_size_sum is None:
             return cp
 
         view_area = self._movement_profile.map_view_area
         if view_area is not None:
             return compute_character_screen_pos(
-                pre_pos, map_size, vision.block_size, cp, view_area
+                pre_pos, map_size, map_size_sum, vision.block_size, cp, view_area
             )
+        # legacy 需要完整 map_size; sum-only 则跳过修正
+        if map_size is None:
+            return cp
         return self._character_screen_pos_legacy(pre_pos, vision, map_size)
 
     def _character_screen_pos_legacy(

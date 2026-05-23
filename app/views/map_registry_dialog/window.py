@@ -207,13 +207,30 @@ class MapRegistryDialog(QDialog):
         # 反解按钮: 调用方负责检查依赖参数齐全 (view_area / character_pos / vision_size)
         self._btn_solve_size = QPushButton("反解…")
         self._btn_solve_size.setToolTip(
-            "通过 OCR + 角色屏幕实际位置反解 map_size.\n"
+            "通过 OCR + 角色屏幕实际位置反解 map_size / map_size_sum.\n"
             "要求当前地图已选视野档位, 且运动配置中已配 view_area + character_pos."
         )
         self._btn_solve_size.clicked.connect(self._on_solve_map_size)
         map_size_row.addWidget(self._btn_solve_size)
         map_size_row.addStretch(1)
         form.addRow("地图格数 (w×h):", _wrap(map_size_row))
+
+        # 第二行: w+h sum spinbox. 当走不到屏幕左/右端 (即原地图左下/右上角)
+        # 无法独立反解 mw/mh 时, 可以只录 w+h 作 fallback —— S 方向贴边修正
+        # 只需要 sum 即可工作 (N 方向不依赖任何 map 维度), 但 W/E 修正会被跳过.
+        # map_size 满则 runtime 不看 sum (effective_size_sum 取 map_size 推出),
+        # 但两个字段独立存储, 允许并存 (例如先反解出 sum, 后续补全 mw/mh 中间过渡).
+        map_size_sum_row = QHBoxLayout()
+        self._map_size_sum = QSpinBox()
+        self._map_size_sum.setRange(0, 1998)  # 999 + 999
+        self._map_size_sum.setSpecialValueText("—")
+        self._map_size_sum.valueChanged.connect(self._on_map_geom_changed)
+        map_size_sum_row.addWidget(self._map_size_sum)
+        self._lbl_sum_hint = QLabel("")
+        self._lbl_sum_hint.setStyleSheet("color: #888; font-size: 10px;")
+        map_size_sum_row.addWidget(self._lbl_sum_hint)
+        map_size_sum_row.addStretch(1)
+        form.addRow("维度和 (w+h):", _wrap(map_size_sum_row))
 
         self._vision_combo = QComboBox()
         self._vision_combo.addItem("— 未设置 —", None)
@@ -356,6 +373,7 @@ class MapRegistryDialog(QDialog):
         # 地图格数 / 视野 —— 允许未录入也能编辑（属于静态属性，与 icon/btn 独立）
         self._map_w.blockSignals(True)
         self._map_h.blockSignals(True)
+        self._map_size_sum.blockSignals(True)
         self._vision_combo.blockSignals(True)
         if rec.map_size is not None:
             self._map_w.setValue(rec.map_size[0])
@@ -363,26 +381,57 @@ class MapRegistryDialog(QDialog):
         else:
             self._map_w.setValue(0)  # 0 = 未设置（specialValueText 显示 "—"）
             self._map_h.setValue(0)
+        if rec.map_size_sum is not None:
+            self._map_size_sum.setValue(int(rec.map_size_sum))
+        else:
+            self._map_size_sum.setValue(0)
         vs_idx = self._vision_combo.findData(rec.vision_size)
         self._vision_combo.setCurrentIndex(vs_idx if vs_idx >= 0 else 0)
         self._map_w.blockSignals(False)
         self._map_h.blockSignals(False)
+        self._map_size_sum.blockSignals(False)
         self._vision_combo.blockSignals(False)
 
-        # 越界警告
+        # 越界警告 + sum 提示
         self._lbl_warn.setText(self._check_warnings(name, rec))
+        self._refresh_sum_hint()
 
         self._set_detail_enabled(True)
 
+    def _refresh_sum_hint(self) -> None:
+        """根据当前 w/h/sum 的 spinbox 值显示提示 (推算自动/冗余/不一致)."""
+        w = self._map_w.value()
+        h = self._map_h.value()
+        s = self._map_size_sum.value()
+        if w > 0 and h > 0:
+            derived = w + h
+            if s == 0:
+                self._lbl_sum_hint.setText(
+                    f"(map_size 已满, 推算 sum={derived}; 此字段可空)"
+                )
+            elif s == derived:
+                self._lbl_sum_hint.setText("(与 map_size 一致, 字段冗余)")
+            else:
+                self._lbl_sum_hint.setText(
+                    f"⚠ 与 map_size 推算 ({derived}) 不一致 — 运行时以 map_size 为准"
+                )
+        elif s > 0:
+            self._lbl_sum_hint.setText("(fallback: 只能修正 N/S, 跳过 W/E)")
+        else:
+            self._lbl_sum_hint.setText("")
+
     def _on_map_geom_changed(self, *_args) -> None:
-        """用户改了 map_size / vision_size → 即时写回 LocationRecord"""
+        """用户改了 map_size / map_size_sum / vision_size → 即时写回 LocationRecord"""
         name = self._current_name()
         if name is None:
             return
         rec = self._profile.locations[name]
         w, h = self._map_w.value(), self._map_h.value()
         rec.map_size = (w, h) if (w > 0 and h > 0) else None
+        s = self._map_size_sum.value()
+        rec.map_size_sum = int(s) if s > 0 else None
         rec.vision_size = self._vision_combo.currentData()
+        self._refresh_sum_hint()
 
     def _set_detail_enabled(self, on: bool) -> None:
         has_name = on
@@ -653,6 +702,7 @@ class MapRegistryDialog(QDialog):
 
         # 当前 spinbox 值作为 initial_size 传入 (允许"只反解一个维度, 另一个保留")
         initial = (self._map_w.value(), self._map_h.value())
+        initial_sum = self._map_size_sum.value()  # 0 = 未设置
 
         dlg = MapSizeSolverDialog(
             mumu=self._mumu,
@@ -660,19 +710,31 @@ class MapRegistryDialog(QDialog):
             vision_name=vision_name,
             map_label=name,
             initial_size=initial,
+            initial_sum=initial_sum if initial_sum > 0 else None,
             parent=self,
         )
         if dlg.exec() != QDialog.Accepted:
             return
-        if dlg.accepted_size is None:
-            return  # 防御; accepted 时 accepted_size 应该已设
-        mw, mh = dlg.accepted_size
+        outcome = dlg.accepted_outcome
+        if outcome is None:
+            return  # 防御; accepted 时 outcome 应该已设
 
-        # 写回 spinbox (会触发 _on_map_geom_changed → 即时同步到 LocationRecord)
-        self._map_w.setValue(mw)
-        self._map_h.setValue(mh)
+        # 三种结果独立应用: mw / mh / sum 各自有就填回对应 spinbox.
+        applied: list[str] = []
+        if outcome.mw is not None:
+            self._map_w.setValue(int(outcome.mw))
+            applied.append(f"mw={int(outcome.mw)}")
+        if outcome.mh is not None:
+            self._map_h.setValue(int(outcome.mh))
+            applied.append(f"mh={int(outcome.mh)}")
+        if outcome.sum_ is not None:
+            self._map_size_sum.setValue(int(outcome.sum_))
+            applied.append(f"sum={int(outcome.sum_)}")
+
         log.info(
-            "「%s」反解结果应用: map_size=(%d, %d), 待用户点保存才落盘", name, mw, mh
+            "「%s」反解结果应用: %s, 待用户点保存才落盘",
+            name,
+            ", ".join(applied) if applied else "(无)",
         )
 
         # 触发越界警告刷新 (map_size 变了, 但当前 _check_warnings 只看 icon/btn,

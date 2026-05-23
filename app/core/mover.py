@@ -79,10 +79,14 @@ class WaitOutcome:
 class MapContext:
     """执行移动时需要的上下文"""
 
-    # 地图格数 (width, height)；为 None 表示"路径不会触碰屏幕边缘"，
-    # 此时跳过贴边修正（角色永远在屏幕中心 character_pos 处）。
+    # 地图格数 (width, height)；为 None 表示该地图没有完整 mw/mh, 此时贴边修正
+    # 由 map_size_sum 决定 (只能修正 N/S 方向). 两者都为 None 视为"路径不触边",
+    # 完全跳过贴边修正 (角色永远在屏幕中心 character_pos 处).
     map_size: Optional[tuple[int, int]]
     vision: VisionSpec
+    # 地图维度和 w+h. map_size 不可得时作为 fallback (仅修正 N/S 方向, W/E 跳过).
+    # map_size 在场时这个字段会被运行时忽略 (从完整 map_size 推出实际 sum).
+    map_size_sum: Optional[int] = None
     minimap_coord_roi: Optional[tuple[float, float, float, float]] = None
 
 
@@ -140,28 +144,33 @@ class Mover:
 
           2) 老 vision_delta_limit 经验算法 (fallback): map_view_area 未配置
              时使用. 只考虑离最近的**单一**顶点, 对双轴同时激活会算偏 (是这次
-             暴露的 bug 的根因, 现已被路径 1 接管).
+             暴露的 bug 的根因, 现已被路径 1 接管). 这条 fallback 路径需要完整
+             map_size; sum-only 场景下用不了, 此时退化为"不做修正".
 
-        若 ctx.map_size 为 None, 视为"路径不会触碰边缘", 直接返回 character_pos.
+        若 ctx.map_size 和 ctx.map_size_sum 均为 None, 视为"路径不会触碰边缘",
+        直接返回 character_pos.
         """
         cx, cy = self.profile.character_pos
-        if ctx.map_size is None:
+        if ctx.map_size is None and ctx.map_size_sum is None:
             return (cx, cy)
 
-        # 路径 1: 几何算法 (优先, 与 click_preview / map_size_solver 用同一套)
+        # 路径 1: 几何算法 (优先, 与 click_preview / map_size_solver 用同一套).
+        # 同时支持完整 map_size 和 sum-only fallback.
         view_area = self.profile.map_view_area
         if view_area is not None:
             return compute_character_screen_pos(
                 pre_pos=pre_pos,
                 map_size=ctx.map_size,
+                map_size_sum=ctx.map_size_sum,
                 block_size=ctx.vision.block_size,
                 character_pos=self.profile.character_pos,
                 view_area=view_area,
             )
 
-        # 路径 2: 老 vision_delta_limit 算法 (fallback)
-        # 仅在 map_view_area 未配置时使用. 与 click_preview_dialog 中
-        # _character_screen_pos_legacy 的实现保持一致, 修改时记得两边同步.
+        # 路径 2: 老 vision_delta_limit 算法 (fallback). 需要完整 map_size,
+        # sum-only 情况下没法用, 直接返回 character_pos.
+        if ctx.map_size is None:
+            return (cx, cy)
         return self._character_screen_pos_legacy(pre_pos, ctx)
 
     def _character_screen_pos_legacy(

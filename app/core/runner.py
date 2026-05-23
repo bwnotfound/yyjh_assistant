@@ -396,15 +396,24 @@ class RoutineRunner:
                 f"降级使用「{vision_size}」档（请在 GUI 里补全以保证精度）",
             )
 
-        if rec.map_size is None:
+        if rec.map_size is None and rec.map_size_sum is None:
             _log(
                 self.hooks,
                 "warning",
-                f"「{self._current_map}」未配置 map_size，按『不触边』处理（无贴边修正）",
+                f"「{self._current_map}」未配置 map_size 或 map_size_sum，"
+                f"按『不触边』处理（无贴边修正）",
+            )
+        elif rec.map_size is None:
+            _log(
+                self.hooks,
+                "info",
+                f"「{self._current_map}」仅配置了 map_size_sum=({rec.map_size_sum})，"
+                f"将只做 N/S 方向贴边修正 (W/E 跳过)",
             )
 
         return MapContext(
             map_size=rec.map_size,
+            map_size_sum=rec.map_size_sum,
             vision=self.movement_profile.vision(vision_size),
             minimap_coord_roi=self.movement_profile.minimap_coord_roi,
         )
